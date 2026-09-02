@@ -7,6 +7,10 @@ a living room — no screen, no keyboard, unattended.
 **Read `SPEC.md` before starting work.** It defines what is built (Phase 1),
 what isn't (Phases 2–4), and the interface contract that must not break.
 
+`docs/PLAN.md` is the day-by-day working plan: the audited gap list, the
+scheduled work, and what is already done. Start there for *what to do next*;
+SPEC.md remains the authority on *what the thing is*.
+
 ## Commands
 
 ```bash

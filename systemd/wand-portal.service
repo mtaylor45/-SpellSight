@@ -19,9 +19,9 @@ ExecStart=/opt/wand-portal/.venv/bin/python -m wandportal
 
 Restart=always
 RestartSec=5
-# Hardware watchdog: the process must ping systemd or be restarted.
-# Requires sd_notify support in main.py - see spec R3.2.
-WatchdogSec=60
+# No WatchdogSec until main.py sends sd_notify WATCHDOG=1 pings (spec R3.2).
+# Setting it before then is worse than not having it: systemd sees a process
+# that never checks in, calls it hung, and restarts it on every interval.
 
 NoNewPrivileges=true
 ProtectSystem=strict

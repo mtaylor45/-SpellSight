@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 from collections import deque
@@ -51,19 +52,30 @@ class Engine:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Recording a sample writes templates to disk. That happens here rather
+        # than on the capture loop, so a slow SD card costs no frames.
+        self._training: queue.Queue = queue.Queue()
+        self._training_thread: threading.Thread | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
         self.camera.start()
         self.mqtt.start()
+        self._training_thread = threading.Thread(
+            target=self._training_loop, name="training", daemon=True
+        )
+        self._training_thread.start()
         self._thread = threading.Thread(target=self._loop, name="engine", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._training.put(None)
         if self._thread:
             self._thread.join(timeout=3.0)
+        if self._training_thread:
+            self._training_thread.join(timeout=3.0)
         self.mqtt.stop()
         self.camera.stop()
 
@@ -92,47 +104,68 @@ class Engine:
             with self._lock:
                 self._frame = annotated
 
+    def _training_loop(self) -> None:
+        """Record training samples away from the capture loop.
+
+        add_sample() persists to disk, and a frame missed mid-gesture is a
+        failed cast — so the loop hands the work over and moves on.
+        """
+        while True:
+            item = self._training.get()
+            if item is None:
+                return
+            spell_id, points, duration = item
+            try:
+                count = self.recognizer.add_sample(spell_id, points)
+            except Exception:  # a full or read-only /data must not kill training
+                log.exception("Could not record a sample for %s", spell_id)
+                continue
+            spell = self.by_id.get(spell_id)
+            self._record({
+                "at": time.time(),
+                "kind": "sample",
+                "spell_id": spell_id,
+                "name": spell.name if spell else spell_id,
+                "count": count,
+                "duration": round(duration, 2),
+            })
+            log.info("Recorded sample %d for %s", count, spell_id)
+
+    def _record(self, entry: dict) -> None:
+        self.last_result = entry
+        self.history.appendleft(entry)
+
     def _handle_gesture(self, gesture) -> None:
         self.last_trace = gesture.points
 
         if self.mode == MODE_TRAIN and self.training_spell:
-            count = self.recognizer.add_sample(self.training_spell, gesture.points)
-            spell = self.by_id.get(self.training_spell)
-            entry = {
-                "at": time.time(),
-                "kind": "sample",
-                "spell_id": self.training_spell,
-                "name": spell.name if spell else self.training_spell,
-                "count": count,
-                "duration": round(gesture.duration, 2),
-            }
-            log.info("Recorded sample %d for %s", count, self.training_spell)
-        else:
-            match = self.recognizer.classify(gesture.points, enabled=self.spell_ids)
-            spell = self.by_id.get(match.spell_id) if match.spell_id else None
-            published = False
-            if match.accepted and spell and self.mode == MODE_RUN:
-                self.mqtt.cast(spell, match.confidence, gesture.duration)
-                published = True
-            entry = {
-                "at": time.time(),
-                "kind": "cast" if match.accepted else "rejected",
-                "spell_id": match.spell_id,
-                "name": spell.name if spell else "Unrecognized",
-                "confidence": round(match.confidence, 3),
-                "runner_up": match.runner_up,
-                "runner_up_confidence": round(match.runner_up_confidence, 3),
-                "reason": match.rejected_reason,
-                "published": published,
-                "duration": round(gesture.duration, 2),
-            }
-            log.info(
-                "Gesture: %s conf=%.3f %s",
-                match.spell_id, match.confidence, match.rejected_reason or "-> cast",
-            )
+            self._training.put((self.training_spell, gesture.points, gesture.duration))
+            return
 
-        self.last_result = entry
-        self.history.appendleft(entry)
+        match = self.recognizer.classify(gesture.points, enabled=self.spell_ids)
+        spell = self.by_id.get(match.spell_id) if match.spell_id else None
+        published = False
+        if match.accepted and spell and self.mode == MODE_RUN:
+            self.mqtt.cast(spell, match.confidence, gesture.duration)
+            published = True
+        entry = {
+            "at": time.time(),
+            "kind": "cast" if match.accepted else "rejected",
+            "spell_id": match.spell_id,
+            "name": spell.name if spell else "Unrecognized",
+            "confidence": round(match.confidence, 3),
+            "runner_up": match.runner_up,
+            "runner_up_confidence": round(match.runner_up_confidence, 3),
+            "reason": match.rejected_reason,
+            "published": published,
+            "duration": round(gesture.duration, 2),
+        }
+        log.info(
+            "Gesture: %s conf=%.3f %s",
+            match.spell_id, match.confidence, match.rejected_reason or "-> cast",
+        )
+
+        self._record(entry)
 
     # -- rendering ---------------------------------------------------------
 

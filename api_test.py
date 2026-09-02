@@ -1,6 +1,15 @@
 import math, tempfile, threading, time, types
 import numpy as np, cv2
-from fastapi.testclient import TestClient
+
+try:
+    # starlette raises RuntimeError (not ImportError) when httpx is absent.
+    from fastapi.testclient import TestClient
+except (ImportError, RuntimeError) as exc:
+    raise SystemExit(
+        "api_test needs its test-only dependency:\n"
+        "    pip install -r requirements-dev.txt\n"
+        f"\n(import failed with: {exc})"
+    )
 from wandportal import config as cfgmod
 from wandportal.engine import Engine
 from wandportal.server import create_app

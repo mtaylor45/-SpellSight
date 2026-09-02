@@ -14,6 +14,7 @@ python -m wandportal -c config.yaml     # run
 python -m wandportal --list-spells      # print the 45-spell catalog
 python -m wandportal --no-server -v     # headless, debug logging
 
+pip install -r requirements-dev.txt     # test-only deps (httpx, for api_test)
 python smoke_test.py                    # tracker + recognizer, no hardware
 python api_test.py                      # full HTTP API against a fake camera
 

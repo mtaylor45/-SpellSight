@@ -1,0 +1,7 @@
+# Test-only dependencies. Not needed to run the device.
+#
+# api_test.py drives the app through fastapi.testclient, which needs httpx.
+# Bare `fastapi` does not pull httpx in — it arrives only via the
+# fastapi[standard] / starlette[full] extras — so without this file
+# `python api_test.py` fails at import on a clean install.
+httpx>=0.27,<1

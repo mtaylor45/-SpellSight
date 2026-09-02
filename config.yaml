@@ -1,0 +1,67 @@
+# Wand Portal configuration.
+# Every value can also be set with an env var: WAND_<SECTION>_<KEY>
+# e.g. WAND_MQTT_HOST=192.168.0.40, WAND_TRACKER_THRESHOLD=235
+
+camera:
+  source: 0              # /dev/video0. Use "/dev/video2" etc. if you have several.
+  width: 640
+  height: 480
+  fps: 30
+  fourcc: MJPG           # most USB cams need MJPG to hit 30fps at 640x480
+  flip_horizontal: true  # mirror it — casting feels wrong otherwise
+  flip_vertical: false
+  rotate: 0
+
+tracker:
+  threshold: 220         # tune this first, in the console's Tune mode
+  blur: 3
+  min_area: 2
+  max_area: 500
+  max_jump: 120          # px/frame; rejects a second reflection stealing the track
+  lost_frames: 8         # ~0.27s at 30fps before a cast is considered finished
+  min_points: 12
+  min_path_length: 60
+  max_duration: 4.0
+  cooldown: 1.5
+  smoothing: 0.35
+
+recognizer:
+  resample_points: 64
+  rotation_invariant: false   # keep false: orientation distinguishes spells
+  min_confidence: 0.82
+  min_margin: 0.03
+  templates_path: /data/templates.json
+
+mqtt:
+  enabled: true
+  host: 192.168.0.40
+  port: 1883
+  username: ""
+  password: ""
+  client_id: wand-portal
+  base_topic: wand
+  discovery_prefix: homeassistant
+  node_id: wand
+  device_name: Wand Portal
+  pulse_seconds: 3
+  retain_last_spell: true
+
+server:
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+  stream_fps: 15
+  stream_quality: 70
+
+# Start small. Six to ten gestures is the realistic ceiling for reliable
+# in-air recognition; add more only once the self-test still looks clean.
+# Run `python -m wandportal --list-spells` to see all 45 available ids.
+spells:
+  - lumos
+  - nox
+  - alohomora
+  - colloportus
+  - incendio
+  - accio
+  - silencio
+  - revelio

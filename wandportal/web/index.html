@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d0f14">
+<title>Wand Portal</title>
+<style>
+  :root{
+    --ink:#0d0f14;
+    --panel:#161a22;
+    --rule:#262d3a;
+    --parchment:#e9e3d5;
+    --muted:#8790a0;
+    --wandlight:#ffb648;
+    --confirmed:#6fd3c7;
+    --refused:#e0705f;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--ink); color:var(--parchment);
+    font-family:var(--sans); font-size:16px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    padding:0 0 max(2rem, env(safe-area-inset-bottom));
+  }
+  .wrap{max-width:560px; margin:0 auto; padding:0 1rem}
+
+  /* Hero: the live wand trail */
+  .viewer{position:relative; background:#000; border-bottom:1px solid var(--rule)}
+  .viewer img{display:block; width:100%; aspect-ratio:4/3; object-fit:contain}
+  .viewer figcaption{
+    position:absolute; left:0; right:0; bottom:0;
+    display:flex; gap:1rem; align-items:baseline; flex-wrap:wrap;
+    padding:.55rem .9rem;
+    background:linear-gradient(transparent, rgba(0,0,0,.8));
+    font-size:.78rem; color:var(--muted); font-variant-numeric:tabular-nums;
+  }
+  .pip{display:inline-flex; align-items:center; gap:.4rem}
+  .pip::before{
+    content:""; width:.5rem; height:.5rem; border-radius:50%;
+    background:var(--rule); transition:background .15s;
+  }
+  .pip.lit::before{background:var(--wandlight); box-shadow:0 0 8px var(--wandlight)}
+  .pip.ok::before{background:var(--confirmed)}
+
+  h1{
+    font-family:var(--serif); font-weight:600; font-size:1.35rem;
+    letter-spacing:.01em; margin:1.25rem 0 .15rem;
+  }
+  .sub{color:var(--muted); font-size:.85rem; margin:0 0 1rem}
+
+  /* Mode switcher */
+  .modes{display:flex; gap:.35rem; background:var(--panel); padding:.3rem;
+         border-radius:10px; border:1px solid var(--rule)}
+  .modes button{
+    flex:1; padding:.6rem .4rem; border:0; border-radius:7px; cursor:pointer;
+    background:transparent; color:var(--muted); font:inherit; font-size:.9rem;
+  }
+  .modes button[aria-pressed="true"]{background:#222836; color:var(--parchment)}
+  .modes button:focus-visible{outline:2px solid var(--wandlight); outline-offset:1px}
+
+  .note{color:var(--muted); font-size:.85rem; margin:.85rem 0 0}
+  .note b{color:var(--parchment); font-weight:600}
+
+  h2{
+    font-family:var(--serif); font-weight:600; font-size:1.05rem;
+    margin:1.9rem 0 .6rem; padding-bottom:.4rem; border-bottom:1px solid var(--rule);
+  }
+
+  /* Spell list — a grimoire index, not a card deck */
+  ol.spells{list-style:none; margin:0; padding:0}
+  ol.spells li{border-bottom:1px solid var(--rule)}
+  .spell{
+    display:grid; grid-template-columns:1fr auto auto; gap:.75rem; align-items:center;
+    width:100%; padding:.75rem .1rem; background:none; border:0; color:inherit;
+    font:inherit; text-align:left; cursor:pointer;
+  }
+  .spell:focus-visible{outline:2px solid var(--wandlight); outline-offset:-2px}
+  .spell .name{font-family:var(--serif); font-size:1.05rem}
+  .spell .use{display:block; color:var(--muted); font-family:var(--sans); font-size:.78rem}
+  .spell .count{
+    font-variant-numeric:tabular-nums; font-size:.8rem; color:var(--muted);
+    border:1px solid var(--rule); border-radius:99px; padding:.1rem .55rem;
+  }
+  .spell .count.ready{color:var(--confirmed); border-color:#2f5a55}
+  .spell .count.thin{color:var(--wandlight); border-color:#5c4622}
+  li.training .spell .name{color:var(--wandlight)}
+
+  .drawer{padding:0 .1rem 1rem; display:none}
+  li.open .drawer{display:block}
+  .traces{display:flex; gap:.5rem; flex-wrap:wrap; margin:.2rem 0 .8rem}
+  .trace{position:relative; width:64px; height:64px; border:1px solid var(--rule); border-radius:6px}
+  .trace img{width:100%; height:100%; display:block; filter:sepia(1) hue-rotate(345deg) saturate(3)}
+  .trace button{
+    position:absolute; top:-7px; right:-7px; width:20px; height:20px; border-radius:50%;
+    border:1px solid var(--rule); background:var(--panel); color:var(--muted);
+    font-size:.75rem; line-height:1; cursor:pointer; padding:0;
+  }
+  .row{display:flex; gap:.5rem; flex-wrap:wrap}
+  .btn{
+    padding:.55rem .9rem; border-radius:8px; border:1px solid var(--rule);
+    background:var(--panel); color:var(--parchment); font:inherit; font-size:.85rem; cursor:pointer;
+  }
+  .btn.primary{background:var(--wandlight); border-color:var(--wandlight); color:#20160a; font-weight:600}
+  .btn.quiet{color:var(--muted)}
+  .btn:focus-visible{outline:2px solid var(--wandlight); outline-offset:1px}
+
+  /* Sliders */
+  .dial{margin:0 0 1.1rem}
+  .dial label{display:flex; justify-content:space-between; font-size:.85rem; color:var(--muted)}
+  .dial output{color:var(--parchment); font-variant-numeric:tabular-nums}
+  .dial input{width:100%; accent-color:var(--wandlight); margin-top:.35rem}
+
+  /* Log */
+  ul.log{list-style:none; margin:0; padding:0; font-size:.87rem}
+  ul.log li{display:flex; gap:.6rem; align-items:baseline; padding:.5rem .1rem; border-bottom:1px solid var(--rule)}
+  ul.log .when{color:var(--muted); font-variant-numeric:tabular-nums; font-size:.78rem; min-width:4.2rem}
+  ul.log .what{flex:1}
+  ul.log .what em{font-style:normal; font-family:var(--serif); font-size:1rem}
+  ul.log .cast .what em{color:var(--confirmed)}
+  ul.log .rejected .what em{color:var(--refused)}
+  ul.log .sample .what em{color:var(--wandlight)}
+  ul.log .why{color:var(--muted); font-size:.78rem; display:block}
+  .empty{color:var(--muted); font-size:.87rem; padding:.9rem .1rem}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<figure class="viewer">
+  <img id="feed" src="/stream.mjpg" alt="Live infrared view with the wand trail drawn on it">
+  <figcaption>
+    <span class="pip" id="pipDetect">no wand</span>
+    <span class="pip" id="pipMqtt">Home Assistant</span>
+    <span id="fps">— fps</span>
+  </figcaption>
+</figure>
+
+<main class="wrap">
+  <h1>Wand Portal</h1>
+  <p class="sub" id="modeHint">Watching for spells.</p>
+
+  <div class="modes" role="group" aria-label="Mode">
+    <button id="mCast" aria-pressed="true">Cast</button>
+    <button id="mTrain" aria-pressed="false">Train</button>
+    <button id="mTune" aria-pressed="false">Tune</button>
+  </div>
+
+  <div id="tunePanel" hidden>
+    <p class="note">The view above switches to the raw threshold mask. Adjust until the wand tip is the
+      only white dot in the frame, then leave tune mode to save the setting into the running config.</p>
+    <div id="dials"></div>
+    <div class="row">
+      <button class="btn" id="selfTest">Check spell separation</button>
+    </div>
+    <p class="note" id="selfTestOut"></p>
+  </div>
+
+  <h2 id="spellHeading">Spells</h2>
+  <ol class="spells" id="spells"></ol>
+
+  <h2>Recent casts</h2>
+  <ul class="log" id="log"><li class="empty">Nothing cast yet.</li></ul>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null, mode = "cast", openSpell = null, trainingSpell = null;
+
+const DIALS = [
+  {k:"threshold",      label:"Brightness cutoff", min:80,  max:255, step:1},
+  {k:"min_area",       label:"Smallest blob (px²)", min:1, max:60,  step:1},
+  {k:"max_area",       label:"Largest blob (px²)", min:20, max:2000,step:10},
+  {k:"lost_frames",    label:"Frames before a cast ends", min:2, max:40, step:1},
+  {k:"min_path_length",label:"Shortest accepted path (px)", min:10, max:400, step:5},
+  {k:"cooldown",       label:"Pause after a cast (s)", min:0, max:6, step:0.1},
+  {k:"min_confidence", label:"Match confidence needed", min:0.5, max:0.99, step:0.01},
+  {k:"min_margin",     label:"Gap over the runner-up", min:0, max:0.3, step:0.005},
+];
+
+async function api(path, opts) {
+  const res = await fetch(path, {headers:{"Content-Type":"application/json"}, ...opts});
+  if (!res.ok) throw new Error((await res.json().catch(()=>({}))).detail || res.statusText);
+  return res.json();
+}
+
+function setMode(next, spellId) {
+  mode = next;
+  api("/api/mode", {method:"POST", body:JSON.stringify({mode:next, spell_id:spellId||null})})
+    .then(apply).catch(err => $("modeHint").textContent = err.message);
+}
+
+function apply(s) {
+  state = s;
+  mode = s.mode;
+  trainingSpell = s.training_spell;
+
+  $("mCast").setAttribute("aria-pressed", mode === "run");
+  $("mTrain").setAttribute("aria-pressed", mode === "train");
+  $("mTune").setAttribute("aria-pressed", mode === "tune");
+  $("tunePanel").hidden = mode !== "tune";
+
+  $("fps").textContent = (s.camera_fps || 0).toFixed(0) + " fps";
+  const d = $("pipDetect");
+  d.className = "pip" + (s.detecting ? " lit" : "");
+  d.textContent = s.detecting ? "wand in view" : "no wand";
+  const m = $("pipMqtt");
+  m.className = "pip" + (s.mqtt_connected ? " ok" : "");
+  m.textContent = s.mqtt_connected ? "Home Assistant linked"
+                : s.mqtt_enabled ? "broker unreachable" : "MQTT off";
+
+  const training = s.spells.find(x => x.id === trainingSpell);
+  $("modeHint").textContent =
+      mode === "train" && training ? `Wave ${training.name}. Every clean pass is saved as a sample.`
+    : mode === "train" ? "Pick a spell below to start recording samples."
+    : mode === "tune"  ? "Isolating the wand tip."
+    : "Watching for spells.";
+  $("spellHeading").textContent = mode === "train" ? "Choose a spell to train" : "Spells";
+
+  renderSpells(s.spells);
+  renderLog(s.history);
+  if (mode === "tune" && !$("dials").childElementCount) renderDials(s);
+}
+
+function renderSpells(spells) {
+  const list = $("spells");
+  list.innerHTML = "";
+  for (const sp of spells) {
+    const li = document.createElement("li");
+    if (sp.id === trainingSpell) li.classList.add("training");
+    if (sp.id === openSpell) li.classList.add("open");
+
+    const cls = sp.samples >= 5 ? "ready" : sp.samples > 0 ? "thin" : "";
+    li.innerHTML = `
+      <button class="spell">
+        <span><span class="name">${sp.name}</span>
+          <span class="use">${sp.suggested || sp.effect}</span></span>
+        <span class="count ${cls}">${sp.samples}</span>
+      </button>
+      <div class="drawer"><div class="traces"></div><div class="row"></div></div>`;
+
+    li.querySelector(".spell").onclick = () => {
+      openSpell = openSpell === sp.id ? null : sp.id;
+      refresh();
+    };
+
+    if (sp.id === openSpell) fillDrawer(li, sp);
+    list.appendChild(li);
+  }
+}
+
+function fillDrawer(li, sp) {
+  const traces = li.querySelector(".traces");
+  const stamp = Date.now();
+  for (let i = 0; i < sp.samples; i++) {
+    const box = document.createElement("div");
+    box.className = "trace";
+    box.innerHTML = `<img alt="Sample ${i+1} of ${sp.name}" src="/api/samples/${sp.id}/${i}.png?t=${stamp}">
+                     <button title="Delete this sample">×</button>`;
+    box.querySelector("button").onclick = async (e) => {
+      e.stopPropagation();
+      await api(`/api/samples/${sp.id}/${i}`, {method:"DELETE"});
+      refresh();
+    };
+    traces.appendChild(box);
+  }
+  if (!sp.samples) {
+    traces.innerHTML = `<p class="empty">No samples yet. Switch to Train and wave this spell five times.</p>`;
+  }
+
+  const row = li.querySelector(".row");
+  const train = document.createElement("button");
+  train.className = "btn primary";
+  train.textContent = sp.id === trainingSpell ? "Stop recording" : "Record samples";
+  train.onclick = (e) => { e.stopPropagation();
+    sp.id === trainingSpell ? setMode("run") : setMode("train", sp.id); };
+  row.appendChild(train);
+
+  const fire = document.createElement("button");
+  fire.className = "btn";
+  fire.textContent = "Send to Home Assistant";
+  fire.onclick = async (e) => { e.stopPropagation();
+    await api(`/api/cast/${sp.id}`, {method:"POST"}); refresh(); };
+  row.appendChild(fire);
+
+  if (sp.samples) {
+    const clear = document.createElement("button");
+    clear.className = "btn quiet";
+    clear.textContent = "Delete all samples";
+    clear.onclick = async (e) => { e.stopPropagation();
+      await api(`/api/samples/${sp.id}`, {method:"DELETE"}); refresh(); };
+    row.appendChild(clear);
+  }
+}
+
+function renderLog(history) {
+  const log = $("log");
+  if (!history || !history.length) {
+    log.innerHTML = `<li class="empty">Nothing cast yet.</li>`;
+    return;
+  }
+  log.innerHTML = "";
+  for (const h of history) {
+    const li = document.createElement("li");
+    li.className = h.kind;
+    const t = new Date(h.at * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+    let detail = "";
+    if (h.kind === "sample") detail = `sample ${h.count} recorded`;
+    else if (h.kind === "cast") detail = `sent at ${(h.confidence*100).toFixed(0)}% confidence`;
+    else detail = h.reason || "no match";
+    li.innerHTML = `<span class="when">${t}</span>
+      <span class="what"><em>${h.name}</em><span class="why">${detail}</span></span>`;
+    log.appendChild(li);
+  }
+}
+
+function renderDials(s) {
+  const host = $("dials");
+  host.innerHTML = "";
+  for (const d of DIALS) {
+    const value = d.k in s.tracker ? s.tracker[d.k] : s.recognizer[d.k];
+    const wrap = document.createElement("div");
+    wrap.className = "dial";
+    wrap.innerHTML = `<label for="d_${d.k}">${d.label}<output id="o_${d.k}">${value}</output></label>
+      <input id="d_${d.k}" type="range" min="${d.min}" max="${d.max}" step="${d.step}" value="${value}">`;
+    const input = wrap.querySelector("input");
+    input.oninput = () => $(`o_${d.k}`).textContent = input.value;
+    input.onchange = () => api("/api/tune", {method:"POST",
+      body:JSON.stringify({[d.k]: Number(input.value)})});
+    host.appendChild(wrap);
+  }
+}
+
+$("mCast").onclick  = () => setMode("run");
+$("mTrain").onclick = () => setMode("train", trainingSpell);
+$("mTune").onclick  = () => setMode("tune");
+$("selfTest").onclick = async () => {
+  const r = await api("/api/self-test", {method:"POST"});
+  if (!r.samples) { $("selfTestOut").textContent = "Train some spells first."; return; }
+  const confused = Object.entries(r.confusions)
+    .map(([a, m]) => `${a} reads as ${Object.keys(m).join(", ")}`).join("; ");
+  $("selfTestOut").innerHTML = `<b>${(r.accuracy*100).toFixed(0)}%</b> of ${r.samples} stored samples
+    match their own spell.` + (confused ? ` Trouble: ${confused}.` : " No confusions.");
+};
+
+async function refresh() { try { apply(await api("/api/status")); } catch (e) {} }
+refresh();
+setInterval(refresh, 900);
+</script>
+</body>
+</html>

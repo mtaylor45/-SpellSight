@@ -1,283 +1,183 @@
-"""Blob tracking and gesture segmentation.
+"""IR blob detection and gesture segmentation.
 
-Threshold the frame, find the brightest small blob, follow it between frames,
-and decide where one cast starts and ends. Everything here operates on a single
-frame at a time and holds no locks — it runs inside the capture loop, which must
-never block.
+The retroreflector on the wand tip is by far the brightest thing in an
+IR-lit frame, so a hard grayscale threshold beats a full blob detector
+and costs a fraction of the CPU on a Pi.
 """
 
 from __future__ import annotations
 
-import logging
+import math
 import time
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from enum import Enum
 
 import cv2
 import numpy as np
 
-log = logging.getLogger(__name__)
-
-Point = tuple[float, float]
+from .config import TrackerConfig
 
 
-@dataclass
-class Blob:
-    """A tracked bright spot, in pixel coordinates."""
-
-    x: float
-    y: float
-    area: float
+class TrackState(str, Enum):
+    IDLE = "idle"
+    TRACKING = "tracking"
+    COOLDOWN = "cooldown"
 
 
 @dataclass
 class Gesture:
-    """One completed cast: the path traced between blob acquisition and loss."""
-
-    points: list[Point]
-    started_at: float
-    ended_at: float
-    frames: int
-
-    @property
-    def duration(self) -> float:
-        return self.ended_at - self.started_at
-
-    @property
-    def path_length(self) -> float:
-        return path_length(self.points)
+    points: list[tuple[float, float]]
+    duration: float
+    path_length: float
+    started_at: float = field(default_factory=time.time)
 
 
-@dataclass
-class TrackerUpdate:
-    """What one frame produced. `gesture` is set only on the frame a cast ends."""
+class BlobTracker:
+    def __init__(self, cfg: TrackerConfig):
+        self.cfg = cfg
+        self.state = TrackState.IDLE
+        self.points: list[tuple[float, float]] = []
+        self.last_point: tuple[float, float] | None = None
+        self.detection: tuple[float, float] | None = None
+        self._missing = 0
+        self._started = 0.0
+        self._cooldown_until = 0.0
+        self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        self.mask = None
 
-    blob: Blob | None = None
-    gesture: Gesture | None = None
-    rejected: str | None = None
-    active: bool = False
-    threshold: int = 0
-    candidates: int = 0
+    # -- detection ---------------------------------------------------------
 
+    def detect(self, frame) -> tuple[float, float] | None:
+        """Find the wand tip in a BGR or grayscale frame."""
+        gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-def path_length(points: Sequence[Point]) -> float:
-    """Total arc length of a path in pixels."""
-    if len(points) < 2:
-        return 0.0
-    pts = np.asarray(points, dtype=np.float64)
-    deltas = np.diff(pts, axis=0)
-    return float(np.hypot(deltas[:, 0], deltas[:, 1]).sum())
+        k = self.cfg.blur
+        if k and k >= 3:
+            k = k if k % 2 == 1 else k + 1
+            gray = cv2.GaussianBlur(gray, (k, k), 0)
 
+        _, mask = cv2.threshold(gray, self.cfg.threshold, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
+        self.mask = mask
 
-class Tracker:
-    """Finds the wand tip in each frame and segments the path into gestures."""
-
-    def __init__(
-        self,
-        threshold: int = 230,
-        min_area: float = 2.0,
-        max_area: float = 400.0,
-        max_jump: float = 160.0,
-        smoothing: float = 0.35,
-        start_frames: int = 2,
-        lost_frames: int = 6,
-        min_points: int = 12,
-        min_path_length: float = 90.0,
-        max_gesture_seconds: float = 4.0,
-        threshold_mode: str = "fixed",
-    ) -> None:
-        self.threshold = int(threshold)
-        self.min_area = float(min_area)
-        self.max_area = float(max_area)
-        self.max_jump = float(max_jump)
-        self.smoothing = float(smoothing)
-        self.start_frames = int(start_frames)
-        self.lost_frames = int(lost_frames)
-        self.min_points = int(min_points)
-        self.min_path_length = float(min_path_length)
-        self.max_gesture_seconds = float(max_gesture_seconds)
-        self.threshold_mode = threshold_mode
-
-        self._points: list[Point] = []
-        self._pending: list[Point] = []
-        self._smoothed: Point | None = None
-        self._last: Point | None = None
-        self._seen = 0
-        self._lost = 0
-        self._started_at = 0.0
-        self._frames = 0
-        self._active = False
-        self.last_trace: list[Point] = []
-
-    # `threshold_mode: fixed` is all Phase 1 implements. SPEC.md R2.2 adds an
-    # ambient-adaptive mode and R2.4 a differencing frame source; both plug in
-    # here rather than anywhere else in the pipeline.
-    def working_threshold(self, gray: np.ndarray) -> int:
-        """The brightness cutoff to use for this frame."""
-        return self.threshold
-
-    def to_gray(self, frame: np.ndarray) -> np.ndarray:
-        if frame.ndim == 3:
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        return frame
-
-    def mask(self, frame: np.ndarray) -> np.ndarray:
-        """The binary threshold mask, as shown in the console's Tune view."""
-        gray = self.to_gray(frame)
-        _, binary = cv2.threshold(gray, self.working_threshold(gray), 255, cv2.THRESH_BINARY)
-        return binary
-
-    def _find_blobs(self, gray: np.ndarray, threshold: int) -> list[Blob]:
-        _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        blobs: list[Blob] = []
-        for contour in contours:
-            area = float(cv2.contourArea(contour))
-            x, y, w, h = cv2.boundingRect(contour)
-            if area <= 0.0:
-                # contourArea is 0 for contours a couple of pixels across, which
-                # is exactly the size a distant wand tip is. Fall back to the
-                # bounding box so small blobs aren't silently discarded.
-                area = float(max(1, w * h))
-            if area < self.min_area or area > self.max_area:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best = None
+        best_score = -1.0
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < self.cfg.min_area or area > self.cfg.max_area:
                 continue
-            moments = cv2.moments(contour)
-            if moments["m00"] > 0:
-                cx = moments["m10"] / moments["m00"]
-                cy = moments["m01"] / moments["m00"]
+            m = cv2.moments(c)
+            if m["m00"] == 0:
+                x, y = c[0][0]
+                cx, cy = float(x), float(y)
             else:
-                cx, cy = x + w / 2.0, y + h / 2.0
-            blobs.append(Blob(float(cx), float(cy), area))
-        return blobs
+                cx = m["m10"] / m["m00"]
+                cy = m["m01"] / m["m00"]
 
-    def _choose(self, blobs: list[Blob]) -> Blob | None:
-        """Pick the blob to follow.
+            # Prefer the blob nearest the last known position; otherwise the
+            # largest. This keeps a stray reflection from stealing the track.
+            if self.last_point is not None:
+                d = math.dist((cx, cy), self.last_point)
+                if d > self.cfg.max_jump:
+                    continue
+                score = 1000.0 - d
+            else:
+                score = area
 
-        While tracking, prefer continuity: the nearest candidate within
-        `max_jump`, so a static reflection elsewhere in frame can't steal the
-        trail mid-cast. Otherwise take the largest, which at these areas is the
-        strongest retroreflective return.
-        """
-        if not blobs:
-            return None
-        if self._last is not None:
-            near = [
-                (np.hypot(b.x - self._last[0], b.y - self._last[1]), b)
-                for b in blobs
-            ]
-            near = [(d, b) for d, b in near if d <= self.max_jump]
-            if near:
-                return min(near, key=lambda db: db[0])[1]
-            if self._active:
-                # Everything visible is too far to be the same wand tip.
+            if score > best_score:
+                best_score = score
+                best = (cx, cy)
+
+        return best
+
+    # -- segmentation ------------------------------------------------------
+
+    def update(self, frame) -> Gesture | None:
+        """Feed one frame. Returns a Gesture on the frame a cast completes."""
+        now = time.monotonic()
+
+        if self.state is TrackState.COOLDOWN:
+            if now < self._cooldown_until:
+                self.detection = None
                 return None
-        return max(blobs, key=lambda b: b.area)
+            self.state = TrackState.IDLE
+            self.last_point = None
 
-    def _smooth(self, blob: Blob) -> Point:
-        point = (blob.x, blob.y)
-        if self._smoothed is None:
-            self._smoothed = point
-        else:
-            a = self.smoothing
-            self._smoothed = (
-                a * self._smoothed[0] + (1.0 - a) * point[0],
-                a * self._smoothed[1] + (1.0 - a) * point[1],
-            )
-        return self._smoothed
+        point = self.detect(frame)
+        self.detection = point
 
-    def process(self, frame: np.ndarray, now: float | None = None) -> TrackerUpdate:
-        """Advance the tracker by one frame."""
-        now = time.monotonic() if now is None else now
-        gray = self.to_gray(frame)
-        threshold = self.working_threshold(gray)
-        blobs = self._find_blobs(gray, threshold)
-        blob = self._choose(blobs)
-        update = TrackerUpdate(
-            blob=blob, threshold=threshold, candidates=len(blobs), active=self._active
-        )
+        if point is not None:
+            a = self.cfg.smoothing
+            if self.last_point is not None and 0.0 < a < 1.0:
+                point = (
+                    a * self.last_point[0] + (1 - a) * point[0],
+                    a * self.last_point[1] + (1 - a) * point[1],
+                )
+            self.last_point = point
+            self._missing = 0
 
-        if blob is not None:
-            self._lost = 0
-            self._last = (blob.x, blob.y)
-            point = self._smooth(blob)
-            if self._active:
-                self._points.append(point)
-                self._frames += 1
-                if now - self._started_at > self.max_gesture_seconds:
-                    # A permanently visible reflector would otherwise trace
-                    # forever and never produce a cast.
-                    update.gesture, update.rejected = self._finish(now)
+            if self.state is TrackState.IDLE:
+                self.state = TrackState.TRACKING
+                self.points = [point]
+                self._started = now
             else:
-                self._seen += 1
-                self._pending.append(point)
-                if self._seen >= self.start_frames:
-                    self._active = True
-                    self._started_at = now
-                    self._points = list(self._pending)
-                    self._frames = len(self._pending)
-                    self._pending.clear()
+                self.points.append(point)
+
+            if now - self._started > self.cfg.max_duration:
+                return self._finish(now)
+            return None
+
+        # No blob this frame.
+        if self.state is TrackState.TRACKING:
+            self._missing += 1
+            if self._missing >= self.cfg.lost_frames:
+                return self._finish(now)
         else:
-            self._seen = 0
-            self._pending.clear()
-            if self._active:
-                self._lost += 1
-                if self._lost >= self.lost_frames:
-                    update.gesture, update.rejected = self._finish(now)
-            else:
-                self._smoothed = None
-                self._last = None
+            self.last_point = None
+        return None
 
-        update.active = self._active
-        return update
+    def _finish(self, now: float) -> Gesture | None:
+        points = self.points
+        self.points = []
+        self.last_point = None
+        self._missing = 0
+        self.state = TrackState.COOLDOWN
+        self._cooldown_until = now + self.cfg.cooldown
 
-    def _finish(self, now: float) -> tuple[Gesture | None, str | None]:
-        """End the active gesture, returning it only if it passes the size gates."""
-        points = self._points
-        frames = self._frames
-        started = self._started_at
-        self._reset_path()
-
-        if len(points) < self.min_points:
-            return None, "too_few_points"
+        if len(points) < self.cfg.min_points:
+            return None
         length = path_length(points)
-        if length < self.min_path_length:
-            return None, "too_short"
-
-        self.last_trace = list(points)
-        return Gesture(points=points, started_at=started, ended_at=now, frames=frames), None
-
-    def _reset_path(self) -> None:
-        self._points = []
-        self._pending = []
-        self._smoothed = None
-        self._last = None
-        self._seen = 0
-        self._lost = 0
-        self._frames = 0
-        self._active = False
-
-    @property
-    def current_points(self) -> list[Point]:
-        """The in-flight gesture path, for drawing a live trail."""
-        return self._points
+        if length < self.cfg.min_path_length:
+            return None
+        return Gesture(points=points, duration=now - self._started, path_length=length)
 
     def reset(self) -> None:
-        """Drop any in-flight gesture. Used when tuning values change mid-cast."""
-        self._reset_path()
+        self.points = []
+        self.last_point = None
+        self._missing = 0
+        self.state = TrackState.IDLE
+        self._cooldown_until = 0.0
 
-    def apply(self, values: dict) -> list[str]:
-        """Apply tuning values, returning the names actually changed."""
-        changed = []
-        for key, value in values.items():
-            if not hasattr(self, key) or key.startswith("_"):
-                continue
-            current = getattr(self, key)
-            if isinstance(current, bool) or not isinstance(current, (int, float, str)):
-                continue
-            cast = type(current)(value)
-            if cast != current:
-                setattr(self, key, cast)
-                changed.append(key)
-        if changed:
-            self.reset()
-        return changed
+    def skip_cooldown(self) -> None:
+        self._cooldown_until = 0.0
+
+
+def path_length(points: list[tuple[float, float]]) -> float:
+    return float(sum(math.dist(a, b) for a, b in zip(points, points[1:])))
+
+
+def render_trace(points: list[tuple[float, float]], size: int = 200, pad: int = 12):
+    """Render a gesture as a small square image (for the training console)."""
+    img = np.zeros((size, size), dtype=np.uint8)
+    if len(points) < 2:
+        return img
+    arr = np.array(points, dtype=np.float32)
+    lo = arr.min(axis=0)
+    span = float(max((arr.max(axis=0) - lo).max(), 1e-6))
+    scale = (size - 2 * pad) / span
+    arr = (arr - lo) * scale + pad
+    pts = arr.astype(np.int32).reshape(-1, 1, 2)
+    cv2.polylines(img, [pts], False, 255, 2, cv2.LINE_AA)
+    cv2.circle(img, tuple(pts[0][0]), 4, 160, -1)
+    return img

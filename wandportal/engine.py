@@ -1,11 +1,4 @@
-"""The recognition loop: capture, track, classify, publish.
-
-Nothing in `_loop` may block. MQTT publishing is fire-and-forget, the pulse-off
-timer runs on its own thread, and template writes are handed to a save worker —
-an SD card stalling mid-write must not cost a frame. Saves requested from HTTP
-handlers stay synchronous, because there the caller is a request thread and a
-200 should mean the change is on disk.
-"""
+"""The runtime loop: capture -> track -> classify -> publish."""
 
 from __future__ import annotations
 
@@ -13,398 +6,219 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Sequence
 
 import cv2
 import numpy as np
 
-from .camera import FrameSource
+from .camera import Camera
 from .config import Config
 from .mqtt_bridge import MqttBridge
-from .recognizer import Point, Recognizer
-from .spells import SPELLS_BY_ID, spell_name
-from .tracker import Tracker
+from .recognizer import Recognizer
+from .spells import Spell, resolve
+from .tracker import BlobTracker, TrackState, render_trace
 
 log = logging.getLogger(__name__)
 
-TRAIL_COLOR = (72, 182, 255)
-BLOB_COLOR = (255, 255, 255)
+MODE_RUN = "run"
+MODE_TRAIN = "train"
+MODE_TUNE = "tune"
 
-
-def render_trace(points: Sequence[Point], width: int = 160, height: int = 120, pad: int = 12) -> np.ndarray:
-    """Draw a gesture path onto a small canvas, fitted to it.
-
-    Used for the training thumbnails, which are how you spot a bad sample
-    without replaying video.
-    """
-    canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    if len(points) < 2:
-        return canvas
-    pts = np.asarray(points, dtype=np.float64)
-    lo = pts.min(axis=0)
-    span = pts.max(axis=0) - lo
-    scale = max(float(span.max()), 1e-6)
-    usable = min(width, height) - 2 * pad
-    pts = (pts - lo) / scale * usable
-    pts[:, 0] += (width - usable) / 2.0
-    pts[:, 1] += (height - usable) / 2.0
-    poly = pts.astype(np.int32).reshape(-1, 1, 2)
-    cv2.polylines(canvas, [poly], False, TRAIL_COLOR, 2, cv2.LINE_AA)
-    cv2.circle(canvas, tuple(poly[0][0]), 3, (120, 255, 140), -1)
-    cv2.circle(canvas, tuple(poly[-1][0]), 3, (120, 160, 255), -1)
-    return canvas
+TRAIL_COLOR = (86, 186, 255)     # BGR amber
+HIT_COLOR = (120, 255, 160)
+MISS_COLOR = (90, 90, 235)
 
 
 class Engine:
-    """Owns the camera, tracker, recognizer and MQTT bridge, and the loop between them."""
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.spells: list[Spell] = resolve(cfg.spells)
+        self.spell_ids = [s.id for s in self.spells]
+        self.by_id = {s.id: s for s in self.spells}
 
-    def __init__(
-        self,
-        config: Config,
-        camera: FrameSource,
-        tracker: Tracker,
-        recognizer: Recognizer,
-        mqtt: MqttBridge,
-    ) -> None:
-        self.config = config
-        self.camera = camera
-        self.tracker = tracker
-        self.recognizer = recognizer
-        self.mqtt = mqtt
+        self.camera = Camera(cfg.camera)
+        self.tracker = BlobTracker(cfg.tracker)
+        self.recognizer = Recognizer(cfg.recognizer)
+        self.mqtt = MqttBridge(cfg.mqtt, self.spells)
 
-        self.cooldown = config.engine.cooldown
-        self.events: deque[dict] = deque(maxlen=config.engine.event_history)
-        self.lock = threading.RLock()
-
-        self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self._save_thread: threading.Thread | None = None
-        self._save_requested = threading.Event()
-        self._last_frame: np.ndarray | None = None
-        self._last_frame_id = 0
-        self._last_update = None
-        self._last_publish = 0.0
-        self._started_at = time.time()
-        self._loop_frames = 0
-        self._loop_fps = 0.0
-
+        self.mode = MODE_RUN
         self.training_spell: str | None = None
-        self.casts = 0
-        self.rejections = 0
+        self.history: deque[dict] = deque(maxlen=25)
+        self.last_trace: list[tuple[float, float]] = []
+        self.last_result: dict | None = None
+        self.error: str | None = None
 
-    # ---- lifecycle -------------------------------------------------------
+        self._frame = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
-        self.recognizer.load()
         self.camera.start()
         self.mqtt.start()
-        self._stop.clear()
-        self._save_thread = threading.Thread(target=self._save_loop, name="save", daemon=True)
-        self._save_thread.start()
         self._thread = threading.Thread(target=self._loop, name="engine", daemon=True)
         self._thread.start()
-        log.info("Watching for spells")
 
     def stop(self) -> None:
         self._stop.set()
-        self._save_requested.set()          # wake the save worker so it can exit
         if self._thread:
             self._thread.join(timeout=3.0)
-        if self._save_thread:
-            self._save_thread.join(timeout=3.0)
-        self.camera.stop()
         self.mqtt.stop()
+        self.camera.stop()
 
-    @property
-    def running(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
-
-    # ---- the loop --------------------------------------------------------
+    # -- loop --------------------------------------------------------------
 
     def _loop(self) -> None:
-        last_tick = time.monotonic()
+        last_seq = -1
         while not self._stop.is_set():
-            frame = self.camera.read()
-            if frame is None or frame is self._last_frame:
-                # No new frame yet. A short sleep here is the difference between
-                # an idle Pi and a pegged core.
-                time.sleep(0.002)
+            seq, frame = self.camera.read()
+            if frame is None or seq == last_seq:
+                time.sleep(0.004)
                 continue
-            self._last_frame = frame
-            self._last_frame_id += 1
+            last_seq = seq
 
-            now = time.monotonic()
             try:
-                update = self.tracker.process(frame, now=now)
-            except Exception:
-                log.exception("Tracker failed on a frame; skipping it")
+                gesture = self.tracker.update(frame)
+            except Exception as exc:  # pragma: no cover
+                log.exception("Tracker error")
+                self.error = str(exc)
                 continue
-            self._last_update = update
 
-            if update.gesture is not None:
-                try:
-                    self._handle_gesture(update.gesture)
-                except Exception:
-                    log.exception("Failed to handle a completed gesture")
-            elif update.rejected:
-                self._record({"kind": "discarded", "reason": update.rejected})
+            if gesture is not None:
+                self._handle_gesture(gesture)
 
-            self._loop_frames += 1
-            delta = now - last_tick
-            last_tick = now
-            if delta > 0:
-                instant = 1.0 / delta
-                self._loop_fps = (
-                    instant if self._loop_fps == 0.0 else 0.9 * self._loop_fps + 0.1 * instant
-                )
-
-    def _save_loop(self) -> None:
-        """Persist templates off the capture loop, coalescing bursts of requests."""
-        while not self._stop.is_set():
-            if not self._save_requested.wait(timeout=0.5):
-                continue
-            self._save_requested.clear()
-            if self._stop.is_set():
-                break
-            try:
-                self.save_templates()
-            except OSError as exc:
-                log.error("Could not save templates: %s", exc)
-
-    def save_templates(self) -> None:
-        """Write templates to disk. Safe to call from any thread."""
-        with self.lock:
-            self.recognizer.save()
-
-    def request_save(self) -> None:
-        """Ask the save worker to persist templates soon. Never blocks."""
-        self._save_requested.set()
+            annotated = self._annotate(frame)
+            with self._lock:
+                self._frame = annotated
 
     def _handle_gesture(self, gesture) -> None:
-        if self.training_spell:
-            self._record_sample(gesture)
-            return
+        self.last_trace = gesture.points
 
-        with self.lock:
-            result = self.recognizer.classify(gesture.points)
-
-        if not result.accepted:
-            self.rejections += 1
-            self._record(
-                {
-                    "kind": "rejected",
-                    "spell": result.spell_id,
-                    "name": spell_name(result.spell_id) if result.spell_id else None,
-                    "reason": result.reason,
-                    "confidence": round(result.confidence, 4),
-                    "margin": round(result.margin, 4),
-                    "duration": round(gesture.duration, 3),
-                    "points": len(gesture.points),
-                }
-            )
-            return
-
-        elapsed = time.monotonic() - self._last_publish
-        if elapsed < self.cooldown:
-            self._record(
-                {
-                    "kind": "cooldown",
-                    "spell": result.spell_id,
-                    "name": spell_name(result.spell_id or ""),
-                    "reason": "cooldown",
-                    "confidence": round(result.confidence, 4),
-                }
-            )
-            return
-
-        self._last_publish = time.monotonic()
-        self.casts += 1
-        published = self.mqtt.publish_spell(
-            result.spell_id or "", result.confidence, gesture.duration
-        )
-        self._record(
-            {
-                "kind": "cast",
-                "spell": result.spell_id,
-                "name": spell_name(result.spell_id or ""),
-                "confidence": round(result.confidence, 4),
-                "margin": round(result.margin, 4),
-                "duration": round(gesture.duration, 3),
-                "points": len(gesture.points),
-                "published": published,
-            }
-        )
-        log.info(
-            "Cast %s at %.3f (margin %.3f)%s",
-            result.spell_id, result.confidence, result.margin,
-            "" if published else " [not published: no broker]",
-        )
-
-    def _record_sample(self, gesture) -> None:
-        spell_id = self.training_spell
-        if not spell_id:
-            return
-        with self.lock:
-            sample = self.recognizer.add_sample(spell_id, gesture.points)
-        self.request_save()
-        self._record(
-            {
+        if self.mode == MODE_TRAIN and self.training_spell:
+            count = self.recognizer.add_sample(self.training_spell, gesture.points)
+            spell = self.by_id.get(self.training_spell)
+            entry = {
+                "at": time.time(),
                 "kind": "sample",
-                "spell": spell_id,
-                "name": spell_name(spell_id),
-                "sample_id": sample.id,
-                "points": len(gesture.points),
-                "duration": round(gesture.duration, 3),
+                "spell_id": self.training_spell,
+                "name": spell.name if spell else self.training_spell,
+                "count": count,
+                "duration": round(gesture.duration, 2),
             }
-        )
-        log.info("Recorded sample %s for %s", sample.id, spell_id)
+            log.info("Recorded sample %d for %s", count, self.training_spell)
+        else:
+            match = self.recognizer.classify(gesture.points, enabled=self.spell_ids)
+            spell = self.by_id.get(match.spell_id) if match.spell_id else None
+            published = False
+            if match.accepted and spell and self.mode == MODE_RUN:
+                self.mqtt.cast(spell, match.confidence, gesture.duration)
+                published = True
+            entry = {
+                "at": time.time(),
+                "kind": "cast" if match.accepted else "rejected",
+                "spell_id": match.spell_id,
+                "name": spell.name if spell else "Unrecognized",
+                "confidence": round(match.confidence, 3),
+                "runner_up": match.runner_up,
+                "runner_up_confidence": round(match.runner_up_confidence, 3),
+                "reason": match.rejected_reason,
+                "published": published,
+                "duration": round(gesture.duration, 2),
+            }
+            log.info(
+                "Gesture: %s conf=%.3f %s",
+                match.spell_id, match.confidence, match.rejected_reason or "-> cast",
+            )
 
-    def _record(self, event: dict) -> None:
-        event["at"] = time.time()
-        with self.lock:
-            self.events.appendleft(event)
+        self.last_result = entry
+        self.history.appendleft(entry)
 
-    # ---- training --------------------------------------------------------
+    # -- rendering ---------------------------------------------------------
 
-    def start_training(self, spell_id: str) -> None:
-        if spell_id not in SPELLS_BY_ID:
-            raise KeyError(spell_id)
-        self.training_spell = spell_id
-        self.tracker.reset()
-        log.info("Training %s", spell_id)
+    def _annotate(self, frame):
+        if self.mode == MODE_TUNE and self.tracker.mask is not None:
+            out = cv2.cvtColor(self.tracker.mask, cv2.COLOR_GRAY2BGR)
+        else:
+            out = frame.copy() if frame.ndim == 3 else cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            out = (out * 0.55).astype(np.uint8)
 
-    def stop_training(self) -> None:
-        if self.training_spell:
-            log.info("Stopped training %s", self.training_spell)
-        self.training_spell = None
-        self.tracker.reset()
+        pts = self.tracker.points
+        if len(pts) > 1:
+            arr = np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(out, [arr], False, TRAIL_COLOR, 3, cv2.LINE_AA)
+        elif self.tracker.state is TrackState.COOLDOWN and len(self.last_trace) > 1:
+            arr = np.array(self.last_trace, dtype=np.int32).reshape(-1, 1, 2)
+            color = HIT_COLOR if (self.last_result or {}).get("kind") in ("cast", "sample") else MISS_COLOR
+            cv2.polylines(out, [arr], False, color, 3, cv2.LINE_AA)
 
-    # ---- views for the console ------------------------------------------
+        d = self.tracker.detection
+        if d is not None:
+            cv2.circle(out, (int(d[0]), int(d[1])), 9, (255, 255, 255), 2, cv2.LINE_AA)
 
-    def frame(self, mode: str = "cast") -> np.ndarray | None:
-        """The current frame rendered for the stream.
+        label = self.tracker.state.value
+        if self.mode == MODE_TRAIN and self.training_spell:
+            spell = self.by_id.get(self.training_spell)
+            label = f"training {spell.name if spell else self.training_spell}"
+        cv2.putText(out, label, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    (235, 235, 235), 1, cv2.LINE_AA)
+        return out
 
-        `tune` shows the raw threshold mask, which is what you actually need to
-        see when deciding whether the wand tip is the only white dot in frame.
-        """
-        frame = self._last_frame
+    def jpeg(self, quality: int = 70) -> bytes | None:
+        with self._lock:
+            frame = self._frame
         if frame is None:
             return None
-        if mode == "tune":
-            mask = self.tracker.mask(frame)
-            view = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        return buf.tobytes() if ok else None
+
+    def trace_png(self, spell_id: str, index: int) -> bytes | None:
+        traces = self.recognizer.points_for(spell_id)
+        if index < 0 or index >= len(traces):
+            return None
+        img = render_trace(traces[index])
+        ok, buf = cv2.imencode(".png", img)
+        return buf.tobytes() if ok else None
+
+    # -- control -----------------------------------------------------------
+
+    def set_mode(self, mode: str, spell_id: str | None = None) -> None:
+        if mode not in (MODE_RUN, MODE_TRAIN, MODE_TUNE):
+            raise ValueError(f"unknown mode {mode!r}")
+        if mode == MODE_TRAIN:
+            if spell_id not in self.by_id:
+                raise ValueError(f"{spell_id!r} is not an enabled spell")
+            self.training_spell = spell_id
         else:
-            view = frame.copy()
+            self.training_spell = None
+        self.mode = mode
+        self.tracker.reset()
 
-        update = self._last_update
-        points = self.tracker.current_points if update and update.active else self.tracker.last_trace
-        if len(points) >= 2:
-            poly = np.asarray(points, dtype=np.int32).reshape(-1, 1, 2)
-            cv2.polylines(view, [poly], False, TRAIL_COLOR, 2, cv2.LINE_AA)
-        if update and update.blob is not None:
-            cv2.circle(view, (int(update.blob.x), int(update.blob.y)), 10, BLOB_COLOR, 1)
-        return view
-
-    def status(self) -> dict[str, Any]:
-        update = self._last_update
-        blob = None
-        if update and update.blob is not None:
-            blob = {
-                "x": round(update.blob.x, 1),
-                "y": round(update.blob.y, 1),
-                "area": round(update.blob.area, 1),
-            }
-        with self.lock:
-            trained = self.recognizer.trained_spells()
-            samples = {s: self.recognizer.sample_count(s) for s in trained}
-            last_event = self.events[0] if self.events else None
+    def status(self) -> dict:
+        counts = self.recognizer.counts()
         return {
-            "running": self.running,
-            "mode": "train" if self.training_spell else "cast",
+            "mode": self.mode,
             "training_spell": self.training_spell,
-            "uptime_s": round(time.time() - self._started_at, 1),
-            "loop_fps": round(self._loop_fps, 1),
-            "casts": self.casts,
-            "rejections": self.rejections,
-            "camera": self.camera.stats(),
-            "mqtt": self.mqtt.stats(),
+            "camera_fps": self.camera.fps,
+            "tracker_state": self.tracker.state.value,
+            "detecting": self.tracker.detection is not None,
+            "mqtt_connected": self.mqtt.connected,
+            "mqtt_enabled": self.cfg.mqtt.enabled,
+            "error": self.error,
             "tracker": {
-                "threshold_mode": self.tracker.threshold_mode,
-                "threshold": self.tracker.threshold,
-                # The threshold actually in force. Identical to `threshold` in
-                # fixed mode; SPEC.md R2.2 makes these diverge.
-                "working_threshold": update.threshold if update else self.tracker.threshold,
-                "active": bool(update.active) if update else False,
-                "candidates": update.candidates if update else 0,
-                "blob": blob,
-                "trace_points": len(self.tracker.last_trace),
+                "threshold": self.cfg.tracker.threshold,
+                "min_area": self.cfg.tracker.min_area,
+                "max_area": self.cfg.tracker.max_area,
+                "lost_frames": self.cfg.tracker.lost_frames,
+                "min_path_length": self.cfg.tracker.min_path_length,
+                "cooldown": self.cfg.tracker.cooldown,
             },
             "recognizer": {
-                "trained_spells": trained,
-                "samples": samples,
-                "total_samples": sum(samples.values()),
-                "min_confidence": self.recognizer.min_confidence,
-                "min_margin": self.recognizer.min_margin,
-                "resample_points": self.recognizer.resample_points,
+                "min_confidence": self.cfg.recognizer.min_confidence,
+                "min_margin": self.cfg.recognizer.min_margin,
             },
-            "last_event": last_event,
+            "spells": [
+                {**s.as_dict(), "samples": counts.get(s.id, 0)} for s in self.spells
+            ],
+            "history": list(self.history)[:12],
         }
-
-    def tuning(self) -> dict[str, Any]:
-        """The values the console's Tune panel edits."""
-        t = self.tracker
-        return {
-            "threshold": t.threshold,
-            "min_area": t.min_area,
-            "max_area": t.max_area,
-            "max_jump": t.max_jump,
-            "smoothing": t.smoothing,
-            "start_frames": t.start_frames,
-            "lost_frames": t.lost_frames,
-            "min_points": t.min_points,
-            "min_path_length": t.min_path_length,
-            "max_gesture_seconds": t.max_gesture_seconds,
-            "min_confidence": self.recognizer.min_confidence,
-            "min_margin": self.recognizer.min_margin,
-            "cooldown": self.cooldown,
-        }
-
-    def apply_tuning(self, values: dict) -> list[str]:
-        """Apply tuning values from the console.
-
-        In-memory only — SPEC.md R3.4 adds writing these back to the YAML. Say so
-        in the console rather than letting an hour of tuning quietly evaporate on
-        the next restart.
-        """
-        changed: list[str] = []
-        with self.lock:
-            tracker_values = {k: v for k, v in values.items() if hasattr(self.tracker, k)}
-            changed.extend(self.tracker.apply(tracker_values))
-            for key in ("min_confidence", "min_margin"):
-                if key in values:
-                    new = float(values[key])
-                    if new != getattr(self.recognizer, key):
-                        setattr(self.recognizer, key, new)
-                        changed.append(key)
-            if "cooldown" in values:
-                new = float(values["cooldown"])
-                if new != self.cooldown:
-                    self.cooldown = new
-                    changed.append("cooldown")
-        return changed
-
-    def test_cast(self, spell_id: str) -> bool:
-        """Publish a spell as though it had been cast. Used to wire up automations
-        before any training exists."""
-        if spell_id not in SPELLS_BY_ID:
-            raise KeyError(spell_id)
-        published = self.mqtt.publish_spell(spell_id, 1.0, 0.0)
-        self._record(
-            {
-                "kind": "test",
-                "spell": spell_id,
-                "name": spell_name(spell_id),
-                "published": published,
-            }
-        )
-        return published

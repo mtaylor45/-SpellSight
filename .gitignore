@@ -4,5 +4,4 @@ __pycache__/
 venv/
 data/templates.json
 data/*.tmp
-config.local.yaml
 .DS_Store

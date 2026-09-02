@@ -1,3 +1,3 @@
-"""Wand Portal — IR wand gesture recognition published as Home Assistant entities."""
+"""Wand Portal — IR wand gesture recognition with Home Assistant over MQTT."""
 
 __version__ = "1.0.0"

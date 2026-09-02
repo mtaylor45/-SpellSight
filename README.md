@@ -43,14 +43,8 @@ Retroreflection is directional — LEDs off to the side kill your signal.
 ### Docker
 
 ```bash
-$EDITOR config.yaml                  # set mqtt.host at minimum
+cp config.yaml config.local.yaml     # edit mqtt.host at minimum
 docker compose up -d --build
-```
-
-Or leave the file alone and point it at your broker from the environment:
-
-```bash
-WAND_MQTT_HOST=192.168.0.40 docker compose up -d --build
 ```
 
 Then open `http://<host>:8080`.
@@ -205,8 +199,6 @@ wandportal/
   engine.py        the capture→track→classify→publish loop
   server.py        FastAPI: MJPEG stream, training and tuning API
   spells.py        45-spell catalog
-  config.py        config loading and environment overrides
-  __main__.py      entry point
   web/index.html   the console
 ```
 

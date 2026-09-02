@@ -1,393 +1,252 @@
 """Gesture recognition by normalized template matching.
 
-A $1 Recognizer variant. Each cast is resampled to a fixed number of evenly
-spaced points, scaled uniformly, centered, flattened and unit-normalized, then
-compared to stored samples by cosine similarity.
+A $1-Recognizer variant: resample each path to a fixed point count,
+normalize scale and position, flatten to a unit vector, and compare with
+cosine similarity. Five clean samples per spell is usually enough, which
+matters when you're training forty spells rather than two.
 
-Rotation normalization is deliberately absent. For wand casting an up-stroke and
-a down-stroke should be two different spells, and indicative rotation would
-collapse them into one. Do not "fix" this.
+Rotation normalization is OFF by default — for wand casting, "up-left"
+and "down-right" are different spells, and rotation invariance would
+merge them.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import os
+import math
+import threading
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
-log = logging.getLogger(__name__)
-
-Point = tuple[float, float]
-
-TEMPLATES_VERSION = 1
+from .config import RecognizerConfig
 
 
 @dataclass
-class Sample:
-    """One recorded training trace for a spell."""
-
-    id: str
-    points: list[Point]
-    created: float
-    vector: np.ndarray = field(repr=False, default_factory=lambda: np.zeros(0))
-
-    def to_json(self) -> dict:
-        return {
-            "id": self.id,
-            "created": self.created,
-            "points": [[round(float(x), 3), round(float(y), 3)] for x, y in self.points],
-        }
-
-
-@dataclass
-class MatchResult:
-    """The outcome of classifying one cast.
-
-    `accepted` is the only field the engine acts on; the rest exist so the
-    console can explain a rejection instead of just swallowing it.
-    """
-
+class Match:
     spell_id: str | None
     confidence: float
-    margin: float
-    accepted: bool
-    reason: str
     runner_up: str | None = None
-    scores: dict[str, float] = field(default_factory=dict)
+    runner_up_confidence: float = 0.0
+    rejected_reason: str = ""
 
-    def to_dict(self) -> dict:
-        return {
-            "spell": self.spell_id,
-            "confidence": round(self.confidence, 4),
-            "margin": round(self.margin, 4),
-            "accepted": self.accepted,
-            "reason": self.reason,
-            "runner_up": self.runner_up,
-            "scores": {k: round(v, 4) for k, v in sorted(
-                self.scores.items(), key=lambda kv: kv[1], reverse=True)[:5]},
-        }
+    @property
+    def accepted(self) -> bool:
+        return self.spell_id is not None and not self.rejected_reason
 
 
-def resample(points: Sequence[Point], n: int) -> list[Point]:
-    """Resample a path to `n` points spaced evenly along its arc length.
+# -- geometry --------------------------------------------------------------
 
-    This is what makes recognition independent of how fast the wand moved: a
-    slow cast and a fast one trace the same shape and produce the same vector.
-    """
-    if n < 2:
-        raise ValueError("resample needs at least 2 points")
-    pts = [(float(x), float(y)) for x, y in points]
-    if len(pts) < 2:
-        return [pts[0] if pts else (0.0, 0.0)] * n
 
-    segments = [
-        float(np.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]))
-        for i in range(len(pts) - 1)
-    ]
-    total = sum(segments)
+def resample(points: list[tuple[float, float]], n: int) -> np.ndarray:
+    arr = np.asarray(points, dtype=np.float64)
+    # Drop consecutive duplicates, which break interval walking.
+    keep = [0]
+    for i in range(1, len(arr)):
+        if math.dist(arr[i], arr[keep[-1]]) > 1e-9:
+            keep.append(i)
+    arr = arr[keep]
+    if len(arr) < 2:
+        return np.repeat(arr, n, axis=0)[:n]
+
+    seg = np.linalg.norm(np.diff(arr, axis=0), axis=1)
+    total = float(seg.sum())
     if total <= 0:
-        # A path with no length at all (wand held perfectly still). Callers
-        # reject this downstream via the degenerate-vector check.
-        return [pts[0]] * n
+        return np.repeat(arr[:1], n, axis=0)
 
-    interval = total / (n - 1)
-    out: list[Point] = [pts[0]]
-    distance = 0.0
-    i = 0
-    current = pts[0]
-    while i < len(pts) - 1 and len(out) < n:
-        seg_len = float(np.hypot(pts[i + 1][0] - current[0], pts[i + 1][1] - current[1]))
-        if seg_len <= 0:
-            i += 1
-            current = pts[i]
-            continue
-        if distance + seg_len >= interval:
-            t = (interval - distance) / seg_len
-            nxt = (
-                current[0] + t * (pts[i + 1][0] - current[0]),
-                current[1] + t * (pts[i + 1][1] - current[1]),
-            )
-            out.append(nxt)
-            current = nxt
-            distance = 0.0
-        else:
-            distance += seg_len
-            i += 1
-            current = pts[i]
-
-    while len(out) < n:
-        out.append(pts[-1])
-    return out[:n]
+    cumulative = np.concatenate([[0.0], np.cumsum(seg)])
+    targets = np.linspace(0.0, total, n)
+    out = np.empty((n, 2), dtype=np.float64)
+    out[:, 0] = np.interp(targets, cumulative, arr[:, 0])
+    out[:, 1] = np.interp(targets, cumulative, arr[:, 1])
+    return out
 
 
-def normalize(points: Sequence[Point], n: int = 64) -> np.ndarray:
-    """Resample, scale uniformly, center, flatten, and unit-normalize.
+def _rotate_to_zero(pts: np.ndarray) -> np.ndarray:
+    centroid = pts.mean(axis=0)
+    v = pts[0] - centroid
+    theta = -math.atan2(v[1], v[0])
+    c, s = math.cos(theta), math.sin(theta)
+    rot = np.array([[c, -s], [s, c]])
+    return (pts - centroid) @ rot.T + centroid
 
-    Scaling is uniform rather than per-axis so a flat horizontal swipe stays
-    flat instead of being stretched into a square and colliding with every other
-    gesture.
-    """
-    pts = np.asarray(resample(points, n), dtype=np.float64)
-    span = pts.max(axis=0) - pts.min(axis=0)
-    scale = float(span.max())
-    if scale <= 1e-9:
-        return np.zeros(n * 2, dtype=np.float64)
-    pts = pts / scale
+
+def normalize(
+    points: list[tuple[float, float]],
+    n: int = 64,
+    rotation_invariant: bool = False,
+) -> np.ndarray:
+    """Path -> unit-length feature vector of length 2n."""
+    pts = resample(points, n)
+    if rotation_invariant:
+        pts = _rotate_to_zero(pts)
+
+    # Uniform scale (preserves aspect ratio, so a flat swipe stays flat).
+    span = float((pts.max(axis=0) - pts.min(axis=0)).max())
+    if span > 1e-9:
+        pts = pts / span
     pts = pts - pts.mean(axis=0)
-    vector = pts.reshape(-1)
-    norm = float(np.linalg.norm(vector))
-    if norm <= 1e-9:
-        return np.zeros(n * 2, dtype=np.float64)
-    return vector / norm
+
+    vec = pts.reshape(-1)
+    norm = float(np.linalg.norm(vec))
+    return vec / norm if norm > 1e-9 else vec
 
 
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity of two already unit-normalized vectors, clamped to >= 0."""
-    if a.size == 0 or b.size == 0 or a.size != b.size:
-        return 0.0
-    return max(0.0, float(np.dot(a, b)))
+def similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity of two unit vectors, clamped to 0..1."""
+    return float(max(0.0, min(1.0, np.dot(a, b))))
+
+
+# -- store -----------------------------------------------------------------
 
 
 class Recognizer:
-    """Stores trained samples and classifies casts against them."""
+    """Holds training samples and classifies new gestures against them."""
 
-    def __init__(
-        self,
-        templates_path: str | Path = "data/templates.json",
-        resample_points: int = 64,
-        min_confidence: float = 0.85,
-        min_margin: float = 0.06,
-        max_samples_per_spell: int = 12,
-    ) -> None:
-        self.templates_path = Path(templates_path)
-        self.resample_points = resample_points
-        self.min_confidence = min_confidence
-        self.min_margin = min_margin
-        self.max_samples_per_spell = max_samples_per_spell
-        self.samples: dict[str, list[Sample]] = {}
+    def __init__(self, cfg: RecognizerConfig):
+        self.cfg = cfg
+        self.path = Path(cfg.templates_path)
+        self._lock = threading.Lock()
+        # spell_id -> list of {"points": [[x,y],...], "added": ts}
+        self.samples: dict[str, list[dict]] = {}
+        self._vectors: dict[str, list[np.ndarray]] = {}
+        self.load()
 
-    # ---- persistence -----------------------------------------------------
+    # -- persistence
 
     def load(self) -> None:
-        """Load templates from disk. A missing file is a fresh install, not an error."""
-        if not self.templates_path.exists():
-            log.info("No templates file at %s, starting empty", self.templates_path)
-            return
-        try:
-            raw = json.loads(self.templates_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            log.error("Could not read templates from %s: %s", self.templates_path, exc)
-            return
-
-        stored_n = int(raw.get("resample_points", self.resample_points))
-        spells = raw.get("spells", {})
-        loaded = 0
-        for spell_id, entries in spells.items():
-            samples: list[Sample] = []
-            for entry in entries:
-                points = [(float(p[0]), float(p[1])) for p in entry.get("points", [])]
-                if len(points) < 2:
-                    continue
-                samples.append(
-                    Sample(
-                        id=str(entry.get("id") or uuid.uuid4().hex[:8]),
-                        points=points,
-                        created=float(entry.get("created", time.time())),
-                    )
-                )
-            if samples:
-                self.samples[spell_id] = samples
-                loaded += len(samples)
-        if stored_n != self.resample_points:
-            log.info(
-                "Templates stored at %d points, recomputing for %d",
-                stored_n, self.resample_points,
-            )
-        self._rebuild_vectors()
-        log.info("Loaded %d samples across %d spells", loaded, len(self.samples))
+        with self._lock:
+            if self.path.is_file():
+                data = json.loads(self.path.read_text() or "{}")
+                self.samples = data.get("samples", {})
+            self._rebuild()
 
     def save(self) -> None:
-        """Write templates atomically.
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "resample_points": self.cfg.resample_points,
+                "rotation_invariant": self.cfg.rotation_invariant,
+                "samples": self.samples,
+            }
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(self.path)
 
-        Write-then-rename so a power cut mid-save leaves the previous file
-        intact rather than a truncated one. This device gets unplugged.
-        """
-        self.templates_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": TEMPLATES_VERSION,
-            "resample_points": self.resample_points,
-            "saved_at": time.time(),
-            "spells": {
-                spell_id: [s.to_json() for s in samples]
-                for spell_id, samples in sorted(self.samples.items())
-                if samples
-            },
+    def _rebuild(self) -> None:
+        self._vectors = {
+            sid: [
+                normalize(s["points"], self.cfg.resample_points, self.cfg.rotation_invariant)
+                for s in entries
+                if len(s.get("points", [])) >= 2
+            ]
+            for sid, entries in self.samples.items()
         }
-        tmp = self.templates_path.with_suffix(self.templates_path.suffix + ".tmp")
-        with open(tmp, "w") as fh:
-            json.dump(payload, fh, indent=1)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.templates_path)
 
-    def _rebuild_vectors(self) -> None:
-        for samples in self.samples.values():
-            for sample in samples:
-                sample.vector = normalize(sample.points, self.resample_points)
+    # -- training
 
-    # ---- training --------------------------------------------------------
+    def add_sample(self, spell_id: str, points: list[tuple[float, float]]) -> int:
+        with self._lock:
+            entry = {
+                "points": [[round(float(x), 2), round(float(y), 2)] for x, y in points],
+                "added": time.time(),
+            }
+            self.samples.setdefault(spell_id, []).append(entry)
+            self._vectors.setdefault(spell_id, []).append(
+                normalize(points, self.cfg.resample_points, self.cfg.rotation_invariant)
+            )
+            count = len(self.samples[spell_id])
+        self.save()
+        return count
 
-    def add_sample(self, spell_id: str, points: Sequence[Point]) -> Sample:
-        """Record one training trace, dropping the oldest if the spell is full."""
-        sample = Sample(
-            id=uuid.uuid4().hex[:8],
-            points=[(float(x), float(y)) for x, y in points],
-            created=time.time(),
-        )
-        sample.vector = normalize(sample.points, self.resample_points)
-        bucket = self.samples.setdefault(spell_id, [])
-        bucket.append(sample)
-        if len(bucket) > self.max_samples_per_spell:
-            del bucket[0 : len(bucket) - self.max_samples_per_spell]
-        return sample
+    def delete_sample(self, spell_id: str, index: int) -> bool:
+        with self._lock:
+            entries = self.samples.get(spell_id)
+            if not entries or index < 0 or index >= len(entries):
+                return False
+            entries.pop(index)
+            if not entries:
+                self.samples.pop(spell_id, None)
+            self._rebuild()
+        self.save()
+        return True
 
-    def delete_sample(self, spell_id: str, sample_id: str) -> bool:
-        bucket = self.samples.get(spell_id)
-        if not bucket:
-            return False
-        for i, sample in enumerate(bucket):
-            if sample.id == sample_id:
-                del bucket[i]
-                if not bucket:
-                    del self.samples[spell_id]
-                return True
-        return False
+    def clear_spell(self, spell_id: str) -> None:
+        with self._lock:
+            self.samples.pop(spell_id, None)
+            self._rebuild()
+        self.save()
 
-    def clear_spell(self, spell_id: str) -> int:
-        removed = len(self.samples.pop(spell_id, []))
-        return removed
+    def counts(self) -> dict[str, int]:
+        with self._lock:
+            return {sid: len(v) for sid, v in self.samples.items()}
 
-    def trained_spells(self) -> list[str]:
-        return sorted(k for k, v in self.samples.items() if v)
+    def points_for(self, spell_id: str) -> list[list[list[float]]]:
+        with self._lock:
+            return [s["points"] for s in self.samples.get(spell_id, [])]
 
-    def sample_count(self, spell_id: str) -> int:
-        return len(self.samples.get(spell_id, []))
+    # -- classification
 
-    # ---- classification --------------------------------------------------
+    def classify(self, points: list[tuple[float, float]], enabled: list[str] | None = None) -> Match:
+        vec = normalize(points, self.cfg.resample_points, self.cfg.rotation_invariant)
 
-    def score_all(self, points: Sequence[Point], exclude: str | None = None) -> dict[str, float]:
-        """Best cosine score per spell. `exclude` skips one sample id, for leave-one-out."""
-        vector = normalize(points, self.resample_points)
-        if not np.any(vector):
-            return {}
-        scores: dict[str, float] = {}
-        for spell_id, samples in self.samples.items():
-            best = 0.0
-            for sample in samples:
-                if exclude is not None and sample.id == exclude:
+        with self._lock:
+            scores: dict[str, float] = {}
+            for sid, templates in self._vectors.items():
+                if enabled is not None and sid not in enabled:
                     continue
-                best = max(best, cosine(vector, sample.vector))
-            if best > 0.0:
-                scores[spell_id] = best
-        return scores
+                if not templates:
+                    continue
+                scores[sid] = max(similarity(vec, t) for t in templates)
 
-    def classify(self, points: Sequence[Point], exclude: str | None = None) -> MatchResult:
-        """Classify a cast.
-
-        Two gates, not one: the best match must clear `min_confidence` *and* beat
-        the runner-up by `min_margin`. The margin gate is what stops a sloppy
-        wave from picking arbitrarily between two similar spells.
-        """
-        if not self.samples:
-            return MatchResult(None, 0.0, 0.0, False, "no_templates")
-
-        scores = self.score_all(points, exclude=exclude)
         if not scores:
-            return MatchResult(None, 0.0, 0.0, False, "degenerate")
+            return Match(None, 0.0, rejected_reason="no templates trained")
 
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-        best_id, best_score = ranked[0]
-        runner_up_id, runner_up_score = (ranked[1] if len(ranked) > 1 else (None, 0.0))
-        margin = best_score - runner_up_score
+        best_id, best = ranked[0]
+        second_id, second = ranked[1] if len(ranked) > 1 else (None, 0.0)
 
-        if best_score < self.min_confidence:
-            reason = "low_confidence"
-        elif len(ranked) > 1 and margin < self.min_margin:
-            reason = "low_margin"
-        else:
-            reason = "ok"
+        if best < self.cfg.min_confidence:
+            return Match(best_id, best, second_id, second,
+                         rejected_reason=f"below confidence ({best:.2f} < {self.cfg.min_confidence:.2f})")
+        if second_id and (best - second) < self.cfg.min_margin:
+            return Match(best_id, best, second_id, second,
+                         rejected_reason=f"too close to {second_id} ({best - second:.3f} margin)")
+        return Match(best_id, best, second_id, second)
 
-        return MatchResult(
-            spell_id=best_id,
-            confidence=best_score,
-            margin=margin,
-            accepted=(reason == "ok"),
-            reason=reason,
-            runner_up=runner_up_id,
-            scores=scores,
-        )
-
-    # ---- diagnostics -----------------------------------------------------
-
-    def separation(self) -> dict:
-        """Leave-one-out check over every stored sample.
-
-        Names the pairs that read as each other, which is the honest answer to
-        "can I add another spell?" — better than lowering min_confidence until
-        things stop failing.
-        """
-        total = 0
-        correct = 0
-        confusions: dict[str, int] = {}
-        per_spell: dict[str, dict] = {}
-
-        # With a single sample in the whole store, leave-one-out has nothing to
-        # compare against and every result would be a meaningless miss.
-        if sum(len(v) for v in self.samples.values()) < 2:
-            return {
-                "total": 0, "correct": 0, "accuracy": 0.0,
-                "confusions": [], "per_spell": {},
-                "note": "need at least two samples to check separation",
+    def self_test(self, enabled: list[str] | None = None) -> dict:
+        """Leave-one-out check across stored samples — how separable are the spells?"""
+        with self._lock:
+            vectors = {
+                sid: list(v) for sid, v in self._vectors.items()
+                if (enabled is None or sid in enabled) and v
             }
 
-        for spell_id, samples in self.samples.items():
-            spell_total = 0
-            spell_correct = 0
-            confidences: list[float] = []
-            for sample in samples:
-                result = self.classify(sample.points, exclude=sample.id)
+        total = correct = 0
+        confusions: dict[str, dict[str, int]] = {}
+        for sid, templates in vectors.items():
+            for i, vec in enumerate(templates):
+                scores = {}
+                for other, others in vectors.items():
+                    pool = [t for j, t in enumerate(others) if not (other == sid and j == i)]
+                    if pool:
+                        scores[other] = max(similarity(vec, t) for t in pool)
+                if not scores:
+                    continue
+                pred = max(scores, key=scores.get)
                 total += 1
-                spell_total += 1
-                confidences.append(result.confidence)
-                if result.spell_id == spell_id and result.accepted:
+                if pred == sid:
                     correct += 1
-                    spell_correct += 1
-                elif result.spell_id and result.spell_id != spell_id:
-                    key = " / ".join(sorted((spell_id, result.spell_id)))
-                    confusions[key] = confusions.get(key, 0) + 1
-            per_spell[spell_id] = {
-                "samples": len(samples),
-                "correct": spell_correct,
-                "total": spell_total,
-                "mean_confidence": round(
-                    float(np.mean(confidences)) if confidences else 0.0, 4
-                ),
-            }
+                else:
+                    confusions.setdefault(sid, {}).setdefault(pred, 0)
+                    confusions[sid][pred] += 1
 
         return {
-            "total": total,
+            "samples": total,
             "correct": correct,
-            "accuracy": round(correct / total, 4) if total else 0.0,
-            "confusions": [
-                {"pair": pair, "count": count}
-                for pair, count in sorted(confusions.items(), key=lambda kv: -kv[1])
-            ],
-            "per_spell": per_spell,
+            "accuracy": round(correct / total, 3) if total else 0.0,
+            "confusions": confusions,
         }

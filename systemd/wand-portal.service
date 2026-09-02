@@ -1,0 +1,33 @@
+# Reference unit for spec R3.2. Install to /etc/systemd/system/ then:
+#   sudo systemctl enable --now wand-portal
+[Unit]
+Description=Wand Portal - IR wand gesture recognition
+Documentation=file:///opt/wand-portal/SPEC.md
+# Start even if the network never comes up: MQTT retries in the background and
+# recognition works meanwhile. Wants= not Requires= is deliberate.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wand
+SupplementaryGroups=video gpio audio
+WorkingDirectory=/opt/wand-portal
+Environment=WAND_CONFIG=/opt/wand-portal/config.yaml
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/wand-portal/.venv/bin/python -m wandportal
+
+Restart=always
+RestartSec=5
+# Hardware watchdog: the process must ping systemd or be restarted.
+# Requires sd_notify support in main.py - see spec R3.2.
+WatchdogSec=60
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/wand-portal/data
+
+[Install]
+WantedBy=multi-user.target

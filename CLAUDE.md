@@ -34,8 +34,6 @@ mqtt_bridge.py   MQTT client + Home Assistant discovery.
 engine.py        The loop: capture → track → classify → publish.
 server.py        FastAPI. MJPEG stream, training and tuning API.
 spells.py        Spell catalog. Ids here become MQTT topics and HA entity ids.
-config.py        YAML load, then WAND_<SECTION>_<KEY> env overrides on top.
-__main__.py      Entry point. Wires the components together and runs the console.
 web/index.html   Mobile training console. Single file, no build step, no framework.
 ```
 

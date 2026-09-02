@@ -1,19 +1,22 @@
 services:
-  wandportal:
+  wand:
     build: .
-    container_name: wandportal
+    image: harbor.infra/library/wand-portal:1.0.0
+    container_name: wand-portal
     restart: unless-stopped
-    # A USB camera can't be scheduled across a swarm. If you deploy this as a
-    # stack, pin it to the node the camera is plugged into.
     devices:
       - /dev/video0:/dev/video0
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/config/config.yaml:ro
     ports:
       - "8080:8080"
-    volumes:
-      - ./data:/app/data
-      - ./config.yaml:/app/config.yaml:ro
     environment:
-      WAND_MQTT_HOST: "${WAND_MQTT_HOST:-localhost}"
-      WAND_MQTT_PORT: "${WAND_MQTT_PORT:-1883}"
-      WAND_MQTT_USERNAME: "${WAND_MQTT_USERNAME:-}"
-      WAND_MQTT_PASSWORD: "${WAND_MQTT_PASSWORD:-}"
+      WAND_MQTT_HOST: 192.168.0.40
+      WAND_MQTT_USERNAME: ""
+      WAND_MQTT_PASSWORD: ""
+    # A USB camera can't be scheduled across a swarm — pin this to the node
+    # the camera is plugged into if you deploy it as a stack.
+    # deploy:
+    #   placement:
+    #     constraints: [node.hostname == compute-node-01]

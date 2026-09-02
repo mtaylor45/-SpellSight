@@ -1,92 +1,74 @@
-"""Configuration loading.
-
-YAML file, then `WAND_<SECTION>_<KEY>` environment overrides on top. The env
-layer exists so a Docker deploy can set a broker address without baking a config
-file into the image, and it deliberately wins over the file so a container's
-environment is always the last word.
-"""
+"""Configuration: YAML file, overridable by WAND_* environment variables."""
 
 from __future__ import annotations
 
-import dataclasses
-import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar, get_type_hints
+from typing import Any
 
 import yaml
-
-log = logging.getLogger(__name__)
-
-ENV_PREFIX = "WAND"
 
 
 @dataclass
 class CameraConfig:
-    index: int = 0
+    source: Any = 0              # index (0) or device path ("/dev/video0")
     width: int = 640
     height: int = 480
     fps: int = 30
+    fourcc: str = "MJPG"         # "" to leave the driver default
     flip_horizontal: bool = False
     flip_vertical: bool = False
-    reopen_delay: float = 2.0
+    rotate: int = 0              # 0, 90, 180, 270
 
 
 @dataclass
 class TrackerConfig:
-    # Phase 1 is a fixed threshold, which assumes the retroreflector is trivially
-    # the brightest thing in frame. SPEC.md R2.2 replaces this with an ambient
-    # adaptive mode; `threshold_mode: fixed` must keep reproducing this behavior.
-    threshold_mode: str = "fixed"
-    threshold: int = 230
-    min_area: float = 2.0
-    max_area: float = 400.0
-    max_jump: float = 160.0
-    smoothing: float = 0.35
-    start_frames: int = 2
-    lost_frames: int = 6
+    threshold: int = 220         # grayscale cutoff for the IR reflector
+    blur: int = 3                # gaussian kernel, odd, 0 disables
+    min_area: float = 2.0        # px^2
+    max_area: float = 500.0
+    max_jump: float = 120.0      # px between frames before we reject the point
+    lost_frames: int = 8         # frames without a blob before a gesture ends
     min_points: int = 12
-    min_path_length: float = 90.0
-    max_gesture_seconds: float = 4.0
+    min_path_length: float = 60.0
+    max_duration: float = 4.0    # seconds
+    cooldown: float = 1.5        # seconds after a cast before we listen again
+    smoothing: float = 0.35      # 0 = raw, 0.9 = very smooth
 
 
 @dataclass
 class RecognizerConfig:
     resample_points: int = 64
-    min_confidence: float = 0.85
-    min_margin: float = 0.06
+    rotation_invariant: bool = False
+    min_confidence: float = 0.82
+    min_margin: float = 0.03     # gap required between best and runner-up
     templates_path: str = "data/templates.json"
-    max_samples_per_spell: int = 12
 
 
 @dataclass
 class MqttConfig:
     enabled: bool = True
-    host: str = "localhost"
+    host: str = "homeassistant.local"
     port: int = 1883
     username: str = ""
     password: str = ""
-    client_id: str = "wandportal"
+    client_id: str = "wand-portal"
     base_topic: str = "wand"
     discovery_prefix: str = "homeassistant"
+    node_id: str = "wand"
     device_name: str = "Wand Portal"
     pulse_seconds: float = 3.0
-    keepalive: int = 60
-
-
-@dataclass
-class EngineConfig:
-    cooldown: float = 1.5
-    event_history: int = 50
+    retain_last_spell: bool = True
 
 
 @dataclass
 class ServerConfig:
     enabled: bool = True
-    bind: str = "0.0.0.0"
+    host: str = "0.0.0.0"
     port: int = 8080
-    jpeg_quality: int = 70
+    stream_fps: int = 15
+    stream_quality: int = 70
 
 
 @dataclass
@@ -95,92 +77,59 @@ class Config:
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     recognizer: RecognizerConfig = field(default_factory=RecognizerConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
-    engine: EngineConfig = field(default_factory=EngineConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
-
-    def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
-
-
-T = TypeVar("T")
-
-_SECTIONS = ("camera", "tracker", "recognizer", "mqtt", "engine", "server")
+    spells: list[str] = field(default_factory=lambda: [
+        "lumos", "nox", "alohomora", "colloportus",
+        "incendio", "accio", "silencio", "revelio",
+    ])
+    config_path: str = ""
 
 
-def _coerce(value: Any, target_type: Any) -> Any:
-    """Coerce a YAML or environment value to the dataclass field's type."""
+def _coerce(value: str, target_type: Any) -> Any:
     if target_type is bool:
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in ("1", "true", "yes", "on")
+        return value.strip().lower() in ("1", "true", "yes", "on")
     if target_type is int:
-        return int(float(value))
+        return int(value)
     if target_type is float:
         return float(value)
-    if target_type is str:
-        return str(value)
+    if target_type is list:
+        return [v.strip() for v in value.split(",") if v.strip()]
     return value
 
 
-def _field_types(section: Any) -> dict[str, Any]:
-    """Resolve a dataclass's field types.
-
-    `from __future__ import annotations` makes `Field.type` a string, which would
-    make every coercion below a silent no-op and leave ints as strings.
-    """
-    hints = get_type_hints(type(section))
-    return {f.name: hints[f.name] for f in dataclasses.fields(section)}
-
-
-def _apply(section: Any, values: dict[str, Any], source: str) -> None:
-    """Apply a mapping onto a dataclass instance, ignoring unknown keys."""
-    types = _field_types(section)
-    for key, value in values.items():
-        if key not in types:
-            log.warning("Unknown %s key %r in %s, ignoring", type(section).__name__, key, source)
+def _apply_env(section_name: str, section: Any) -> None:
+    """WAND_MQTT_HOST=... overrides config.mqtt.host"""
+    for f in fields(section):
+        env_key = f"WAND_{section_name}_{f.name}".upper()
+        raw = os.environ.get(env_key)
+        if raw is None:
             continue
-        try:
-            setattr(section, key, _coerce(value, types[key]))
-        except (TypeError, ValueError):
-            log.warning(
-                "Bad value %r for %s.%s in %s, keeping default",
-                value, type(section).__name__, key, source,
-            )
+        current = getattr(section, f.name)
+        setattr(section, f.name, _coerce(raw, type(current)))
 
 
-def _env_overrides(config: Config) -> None:
-    for section_name in _SECTIONS:
-        section = getattr(config, section_name)
-        types = _field_types(section)
-        for name, field_type in types.items():
-            env_key = f"{ENV_PREFIX}_{section_name.upper()}_{name.upper()}"
-            if env_key in os.environ:
-                raw = os.environ[env_key]
-                try:
-                    setattr(section, name, _coerce(raw, field_type))
-                except (TypeError, ValueError):
-                    log.warning("Bad env override %s=%r, keeping current value", env_key, raw)
-                else:
-                    log.info("Config override from %s", env_key)
+def load(path: str | None = None) -> Config:
+    path = path or os.environ.get("WAND_CONFIG", "config.yaml")
+    cfg = Config(config_path=str(Path(path).resolve()))
 
+    p = Path(path)
+    if p.is_file():
+        data = yaml.safe_load(p.read_text()) or {}
+        for key, value in data.items():
+            if not hasattr(cfg, key):
+                continue
+            current = getattr(cfg, key)
+            if is_dataclass(current) and isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if hasattr(current, sub_key):
+                        setattr(current, sub_key, sub_value)
+            else:
+                setattr(cfg, key, value)
 
-def load_config(path: str | Path | None = None) -> Config:
-    """Load config from YAML (if present) with environment overrides applied."""
-    config = Config()
-    if path:
-        p = Path(path)
-        if p.exists():
-            raw = yaml.safe_load(p.read_text()) or {}
-            if not isinstance(raw, dict):
-                raise ValueError(f"{p} must contain a top-level mapping")
-            for section_name in _SECTIONS:
-                values = raw.get(section_name) or {}
-                if values:
-                    _apply(getattr(config, section_name), values, str(p))
-            for key in raw:
-                if key not in _SECTIONS:
-                    log.warning("Unknown config section %r in %s, ignoring", key, p)
-        else:
-            log.warning("Config file %s not found, using defaults", p)
-    _env_overrides(config)
-    return config
+    for name in ("camera", "tracker", "recognizer", "mqtt", "server"):
+        _apply_env(name, getattr(cfg, name))
+
+    if os.environ.get("WAND_SPELLS"):
+        cfg.spells = _coerce(os.environ["WAND_SPELLS"], list)
+
+    return cfg

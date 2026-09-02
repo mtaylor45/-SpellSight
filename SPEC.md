@@ -60,8 +60,6 @@ wandportal/
   engine.py        The capture → track → classify → publish loop
   server.py        FastAPI: MJPEG stream, training and tuning API
   spells.py        45-spell catalog
-  config.py        YAML load plus WAND_<SECTION>_<KEY> environment overrides
-  __main__.py      Entry point and component wiring
   web/index.html   Mobile training console
 ```
 
@@ -75,15 +73,9 @@ A cast publishes only if the best match clears `min_confidence` **and** beats
 the runner-up by `min_margin`. The margin test is what stops a sloppy wave from
 picking arbitrarily between two similar spells.
 
-**Verified.** 26 checks in `smoke_test.py` and 19 in `api_test.py`, both
-without a camera or a broker. 40/40 on jittered synthetic casts across four
-gesture shapes (scale 0.7–1.4×, ±90px translation, gaussian point noise), with
-the lowest accepted confidence at 0.982; random noise correctly rejected, mean
-confidence 0.161; leave-one-out separation 20/20 with no confusions. The frozen
-interface in section 4 has its own regression tests against a stub MQTT client,
-so a change to a topic shape or payload key fails the suite rather than a
-user's automations. Tracker segmentation and the full HTTP API are exercised
-against a synthetic camera driving real casts through the real server.
+**Verified.** 40/40 on jittered synthetic casts across four gesture shapes;
+random noise correctly rejected at 0.084 confidence; tracker segmentation and
+the full HTTP API exercised against a synthetic camera.
 
 **Not verified.** Anything involving real optics, real ambient light, or real
 hardware. That is what Phase 2 exists to fix.

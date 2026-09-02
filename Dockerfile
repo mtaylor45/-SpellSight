@@ -1,8 +1,8 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
-# opencv-python-headless still needs libGL's stubs for its imgproc bindings.
+# opencv-python-headless still needs glib; libgomp is used by its threading layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libglib2.0-0 libgomp1 v4l-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -10,11 +10,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY wandportal/ ./wandportal/
-COPY config.yaml .
+COPY wandportal ./wandportal
+COPY config.yaml ./config.yaml
 
-# Templates live on a mounted volume so trained spells survive a rebuild.
-VOLUME ["/app/data"]
+ENV PYTHONUNBUFFERED=1 \
+    WAND_CONFIG=/config/config.yaml \
+    WAND_RECOGNIZER_TEMPLATES_PATH=/data/templates.json
+
+VOLUME ["/data", "/config"]
 EXPOSE 8080
 
-CMD ["python", "-m", "wandportal", "-c", "config.yaml"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/status',timeout=3)" || exit 1
+
+CMD ["python", "-m", "wandportal"]

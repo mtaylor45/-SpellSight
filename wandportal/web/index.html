@@ -1,0 +1,351 @@
+<!doctype html>
+<!--
+  The Wand Portal console. One file, no framework, no build step — it has to be
+  editable over SSH on a Pi with no toolchain. Keep it that way.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wand Portal</title>
+<style>
+  :root {
+    --bg: #0d0b14; --panel: #16121f; --edge: #2b2338; --ink: #ece7f5;
+    --dim: #8f86a3; --gold: #ffb648; --ok: #6fe3a0; --bad: #ff6f6f; --violet: #9d7bff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: rgba(13,11,20,.94);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--edge); padding: 10px 14px;
+  }
+  .row { display: flex; align-items: center; gap: 10px; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .04em; font-weight: 600; }
+  h1 span { color: var(--gold); }
+  .pill {
+    font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--edge); color: var(--dim); white-space: nowrap;
+  }
+  .pill.ok { color: var(--ok); border-color: #23503a; }
+  .pill.bad { color: var(--bad); border-color: #5a2b2b; }
+  nav { display: flex; gap: 6px; margin-top: 10px; }
+  nav button {
+    flex: 1; padding: 9px; font-size: 14px; border-radius: 9px; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--edge); color: var(--dim);
+  }
+  nav button.on { background: var(--violet); border-color: var(--violet); color: #150f24; font-weight: 600; }
+  main { padding: 14px; max-width: 760px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .view { position: relative; background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--edge); }
+  .view img { display: block; width: 100%; }
+  .view .tag { position: absolute; top: 8px; left: 8px; font-size: 11px; background: rgba(0,0,0,.6); padding: 3px 7px; border-radius: 6px; color: var(--gold); }
+  .hint { color: var(--dim); font-size: 12.5px; margin: 8px 0 0; }
+  button.act {
+    background: var(--gold); color: #241703; border: 0; border-radius: 9px;
+    padding: 10px 14px; font-weight: 600; font-size: 14px; cursor: pointer;
+  }
+  button.act.stop { background: var(--bad); color: #2b0f0f; }
+  button.ghost { background: transparent; border: 1px solid var(--edge); color: var(--ink); border-radius: 9px; padding: 9px 12px; cursor: pointer; font-size: 13px; }
+  input[type=search] { width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--edge); background: #0f0c17; color: var(--ink); font-size: 14px; }
+  .spells { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 7px; max-height: 320px; overflow-y: auto; margin-top: 10px; }
+  .spell { text-align: left; padding: 9px 10px; border-radius: 9px; background: #120e1b; border: 1px solid var(--edge); color: var(--ink); cursor: pointer; }
+  .spell.on { border-color: var(--violet); background: #1d1630; }
+  .spell b { display: block; font-size: 13.5px; font-weight: 600; }
+  .spell small { color: var(--dim); font-size: 11px; }
+  .spell small.has { color: var(--ok); }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .thumb { position: relative; }
+  .thumb img { width: 104px; border-radius: 8px; border: 1px solid var(--edge); display: block; background: #000; }
+  .thumb button { position: absolute; top: 3px; right: 3px; background: rgba(0,0,0,.75); color: var(--bad); border: 0; border-radius: 6px; width: 22px; height: 22px; cursor: pointer; font-size: 14px; line-height: 1; }
+  .tune label { display: flex; justify-content: space-between; font-size: 13px; margin: 12px 0 3px; color: var(--dim); }
+  .tune label b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tune input[type=range] { width: 100%; accent-color: var(--violet); }
+  .log { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 300px; overflow-y: auto; }
+  .log div { padding: 4px 0; border-bottom: 1px solid #1e1829; }
+  .log .cast { color: var(--ok); } .log .rejected, .log .cooldown { color: var(--dim); }
+  .log .sample { color: var(--gold); } .log .test { color: var(--violet); }
+  .kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--dim); }
+  .kv b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .warn { color: var(--gold); font-size: 12.5px; margin-top: 8px; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>Wand <span>Portal</span></h1>
+    <div style="flex:1"></div>
+    <span class="pill" id="pill-mqtt">mqtt…</span>
+    <span class="pill" id="pill-fps">— fps</span>
+  </div>
+  <nav>
+    <button data-mode="cast" class="on">Cast</button>
+    <button data-mode="train">Train</button>
+    <button data-mode="tune">Tune</button>
+  </nav>
+</header>
+
+<main>
+  <div class="view card" style="padding:0">
+    <img id="stream" alt="camera view">
+    <div class="tag" id="view-tag">live</div>
+  </div>
+
+  <!-- Cast -->
+  <section id="pane-cast">
+    <div class="card">
+      <div class="kv">
+        <span>casts <b id="s-casts">0</b></span>
+        <span>rejected <b id="s-rej">0</b></span>
+        <span>trained <b id="s-trained">0</b></span>
+        <span>blob <b id="s-blob">—</b></span>
+        <span>uptime <b id="s-up">—</b></span>
+      </div>
+    </div>
+    <div class="card">
+      <b style="font-size:13px">Event log</b>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <!-- Train -->
+  <section id="pane-train" class="hide">
+    <div class="card">
+      <input type="search" id="filter" placeholder="Filter 45 spells…">
+      <div class="spells" id="spells"></div>
+    </div>
+    <div class="card" id="train-panel">
+      <div class="row">
+        <div>
+          <b id="t-name">Pick a spell</b>
+          <div class="hint" id="t-effect">Its id becomes the Home Assistant entity.</div>
+        </div>
+        <div style="flex:1"></div>
+        <button class="act" id="t-record" disabled>Record samples</button>
+      </div>
+      <div class="row" style="margin-top:10px; gap:8px">
+        <button class="ghost" id="t-ha" disabled>Send to Home Assistant</button>
+        <button class="ghost" id="t-clear" disabled>Clear samples</button>
+      </div>
+      <p class="hint" id="t-hint">Wave the gesture five or six times, the same way each time,
+        at the same distance. Delete any thumbnail that looks wrong.</p>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </section>
+
+  <!-- Tune -->
+  <section id="pane-tune" class="hide">
+    <div class="card">
+      <div class="kv">
+        <span>threshold <b id="u-thr">—</b></span>
+        <span>candidates <b id="u-cand">—</b></span>
+        <span>blob area <b id="u-area">—</b></span>
+        <span>tracking <b id="u-active">—</b></span>
+      </div>
+      <p class="hint">Raise the cutoff until the wand tip is the only white dot — no lamps,
+        no window, no reflection off a picture frame.</p>
+    </div>
+    <div class="card tune" id="tune-fields"></div>
+    <div class="card">
+      <button class="ghost" id="sep-run">Check spell separation</button>
+      <div id="sep-out" class="hint"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.status === 204 ? null : r.json();
+};
+const post = (path, body) => api(path, {
+  method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body || {}),
+});
+
+let mode = "cast", selected = null, recording = false, spells = [], lastSampleAt = 0;
+
+const FIELDS = [
+  ["threshold", 60, 254, 1], ["min_area", 1, 60, 1], ["max_area", 20, 4000, 10],
+  ["max_jump", 20, 400, 5], ["smoothing", 0, 0.9, 0.05], ["start_frames", 1, 10, 1],
+  ["lost_frames", 1, 30, 1], ["min_points", 4, 60, 1], ["min_path_length", 10, 500, 5],
+  ["max_gesture_seconds", 1, 10, 0.5], ["min_confidence", 0.5, 0.99, 0.01],
+  ["min_margin", 0, 0.4, 0.01], ["cooldown", 0, 6, 0.1],
+];
+
+function setMode(next) {
+  mode = next;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.mode === next));
+  $("pane-cast").classList.toggle("hide", next !== "cast");
+  $("pane-train").classList.toggle("hide", next !== "train");
+  $("pane-tune").classList.toggle("hide", next !== "tune");
+  $("view-tag").textContent = next === "tune" ? "threshold mask" : "live";
+  // Re-point the stream so the server renders the right view. The cache-buster
+  // matters: without it the browser reuses the old multipart response.
+  $("stream").src = `/stream.mjpg?mode=${next === "tune" ? "tune" : "cast"}&_=${Date.now()}`;
+}
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+async function loadSpells() {
+  const data = await api("/api/spells");
+  spells = data.spells;
+  renderSpells();
+}
+
+function renderSpells() {
+  const q = $("filter").value.trim().toLowerCase();
+  const list = spells.filter(s => !q || s.name.toLowerCase().includes(q) || s.id.includes(q));
+  $("spells").innerHTML = list.map(s => `
+    <button class="spell ${s.id === selected ? "on" : ""}" data-id="${s.id}">
+      <b>${s.name}</b>
+      <small class="${s.samples ? "has" : ""}">${s.samples ? s.samples + " samples" : s.effect}</small>
+    </button>`).join("");
+  $("spells").querySelectorAll(".spell").forEach(b => b.onclick = () => select(b.dataset.id));
+}
+$("filter").oninput = renderSpells;
+
+async function select(id) {
+  if (recording) await stopRecording();
+  selected = id;
+  const spell = spells.find(s => s.id === id);
+  $("t-name").textContent = spell.name;
+  $("t-effect").textContent = `${spell.effect} · binary_sensor.wand_${spell.id}`;
+  ["t-record", "t-ha", "t-clear"].forEach(b => $(b).disabled = false);
+  renderSpells();
+  await loadSamples();
+}
+
+async function loadSamples() {
+  if (!selected) return;
+  const data = await api(`/api/spells/${selected}/samples`);
+  $("thumbs").innerHTML = data.samples.map(s => `
+    <div class="thumb">
+      <img src="/api/spells/${selected}/samples/${s.id}/trace.png" alt="sample ${s.id}">
+      <button data-id="${s.id}" title="delete">×</button>
+    </div>`).join("") || `<p class="hint">No samples yet.</p>`;
+  $("thumbs").querySelectorAll("button").forEach(b => b.onclick = async () => {
+    await api(`/api/spells/${selected}/samples/${b.dataset.id}`, {method: "DELETE"});
+    await refreshCounts();
+    await loadSamples();
+  });
+}
+
+async function refreshCounts() {
+  const data = await api("/api/spells");
+  spells = data.spells;
+  renderSpells();
+}
+
+async function startRecording() {
+  await post("/api/train/start", {spell: selected});
+  recording = true;
+  $("t-record").textContent = "Stop recording";
+  $("t-record").classList.add("stop");
+  $("t-hint").textContent = "Recording. Each clean pass appears below as a thumbnail.";
+}
+async function stopRecording() {
+  await post("/api/train/stop");
+  recording = false;
+  $("t-record").textContent = "Record samples";
+  $("t-record").classList.remove("stop");
+  await refreshCounts();
+  await loadSamples();
+}
+$("t-record").onclick = () => (recording ? stopRecording() : startRecording());
+
+$("t-ha").onclick = async () => {
+  await post("/api/discovery", {spells: [selected]});
+  const r = await post(`/api/spells/${selected}/test`);
+  $("t-hint").textContent = r.published
+    ? "Sent. The entity should appear under the Wand Portal device and flick on."
+    : "Not published — no broker connection. Check mqtt.host.";
+};
+
+$("t-clear").onclick = async () => {
+  if (!confirm(`Delete every sample for ${selected}?`)) return;
+  await api(`/api/spells/${selected}/samples`, {method: "DELETE"});
+  await refreshCounts();
+  await loadSamples();
+};
+
+async function buildTune() {
+  const values = await api("/api/tuning");
+  $("tune-fields").innerHTML = FIELDS.map(([key, lo, hi, step]) => `
+    <label for="f-${key}">${key.replace(/_/g, " ")} <b id="v-${key}">${values[key]}</b></label>
+    <input type="range" id="f-${key}" min="${lo}" max="${hi}" step="${step}" value="${values[key]}">
+  `).join("") + `<p class="warn">Tuning is in memory only — it resets on restart.</p>`;
+  FIELDS.forEach(([key]) => {
+    const input = $(`f-${key}`);
+    input.oninput = () => ($(`v-${key}`).textContent = input.value);
+    input.onchange = () => post("/api/tuning", {[key]: parseFloat(input.value)});
+  });
+}
+
+$("sep-run").onclick = async () => {
+  $("sep-out").textContent = "Running leave-one-out…";
+  const r = await api("/api/separation");
+  if (!r.total) { $("sep-out").textContent = r.note || "Train at least two samples first."; return; }
+  const pairs = r.confusions.map(c => `${c.pair} ×${c.count}`).join(", ");
+  $("sep-out").innerHTML =
+    `<b>${r.correct}/${r.total}</b> correct (${(r.accuracy * 100).toFixed(0)}%)` +
+    (pairs ? `<br>Confused: ${pairs}. Redraw one of them rather than lowering confidence.` : "<br>No confusions.");
+};
+
+function fmtEvent(e) {
+  const when = new Date(e.at * 1000).toLocaleTimeString();
+  if (e.kind === "cast") return `${when}  ✦ ${e.name} ${e.confidence} (margin ${e.margin})${e.published ? "" : " — not published"}`;
+  if (e.kind === "sample") return `${when}  + sample for ${e.name} (${e.points} pts)`;
+  if (e.kind === "rejected") return `${when}  · rejected ${e.name || "—"} ${e.confidence} (${e.reason})`;
+  if (e.kind === "cooldown") return `${when}  · ${e.name} suppressed (cooldown)`;
+  if (e.kind === "test") return `${when}  ▸ test cast ${e.name}`;
+  return `${when}  · ${e.kind} ${e.reason || ""}`;
+}
+
+async function poll() {
+  try {
+    const s = await api("/api/status");
+    const mqtt = s.mqtt;
+    const pill = $("pill-mqtt");
+    pill.textContent = mqtt.enabled ? (mqtt.connected ? "mqtt ok" : "mqtt down") : "mqtt off";
+    pill.className = "pill " + (mqtt.connected ? "ok" : mqtt.enabled ? "bad" : "");
+    $("pill-fps").textContent = `${s.loop_fps} fps`;
+    $("s-casts").textContent = s.casts;
+    $("s-rej").textContent = s.rejections;
+    $("s-trained").textContent = s.recognizer.trained_spells.length;
+    $("s-blob").textContent = s.tracker.blob ? `${s.tracker.blob.x}, ${s.tracker.blob.y}` : "—";
+    $("s-up").textContent = `${Math.round(s.uptime_s)}s`;
+    $("u-thr").textContent = s.tracker.working_threshold;
+    $("u-cand").textContent = s.tracker.candidates;
+    $("u-area").textContent = s.tracker.blob ? s.tracker.blob.area : "—";
+    $("u-active").textContent = s.tracker.active ? "yes" : "no";
+
+    if (mode === "cast" || mode === "train") {
+      const {events} = await api("/api/events?limit=25");
+      $("log").innerHTML = events.map(e => `<div class="${e.kind}">${fmtEvent(e)}</div>`).join("");
+      // Only reload thumbnails when a *new* sample lands, not on every poll.
+      const newest = events.find(e => e.kind === "sample");
+      if (recording && newest && newest.at > lastSampleAt) {
+        lastSampleAt = newest.at;
+        await loadSamples();
+      }
+    }
+  } catch (err) {
+    $("pill-mqtt").textContent = "offline";
+    $("pill-mqtt").className = "pill bad";
+  }
+}
+
+setMode("cast");
+loadSpells();
+buildTune();
+poll();
+setInterval(poll, 900);
+</script>
+</body>
+</html>

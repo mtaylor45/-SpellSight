@@ -1,0 +1,59 @@
+# Wand Portal configuration.
+#
+# Every value here has an environment override shaped WAND_<SECTION>_<KEY>,
+# and the environment always wins over this file:
+#   WAND_MQTT_HOST=192.168.0.40 WAND_TRACKER_THRESHOLD=235 python -m wandportal
+
+camera:
+  index: 0                  # /dev/video<N>
+  width: 640
+  height: 480
+  fps: 30
+  flip_horizontal: false    # set if the prop mounts the camera mirrored
+  flip_vertical: false
+  reopen_delay: 2.0         # seconds to wait before reopening after a read failure
+
+tracker:
+  # "fixed" is Phase 1 behavior and the fallback the tests assert against.
+  # SPEC.md R2.2 adds "adaptive", which tracks measured ambient instead.
+  threshold_mode: fixed
+  threshold: 230            # brightness cutoff; tune until the wand tip is the only white dot
+  min_area: 2.0             # px, rejects sensor noise
+  max_area: 400.0           # px, rejects lamps and windows
+  max_jump: 160.0           # px between frames; lower it if the track steals onto a reflection
+  smoothing: 0.35           # 0 = raw, toward 0.6 = smoother trail, more lag
+  start_frames: 2           # consecutive frames with a blob before a gesture starts
+  lost_frames: 6            # consecutive frames without one before it ends
+  min_points: 12            # shorter casts are discarded as accidental
+  min_path_length: 90.0     # px of travel, same purpose
+  max_gesture_seconds: 4.0  # force-end, so a permanent reflector can't trace forever
+
+recognizer:
+  resample_points: 64       # changing this invalidates nothing; templates are re-normalized on load
+  min_confidence: 0.85      # raise if you get spurious casts
+  min_margin: 0.06          # required lead over the runner-up; raise if the wrong spell fires
+  templates_path: data/templates.json
+  max_samples_per_spell: 12
+
+mqtt:
+  enabled: true
+  host: localhost
+  port: 1883
+  username: ""
+  password: ""
+  client_id: wandportal
+  base_topic: wand          # frozen: see SPEC.md section 4 before changing
+  discovery_prefix: homeassistant
+  device_name: Wand Portal
+  pulse_seconds: 3.0        # how long a spell's binary_sensor stays ON
+  keepalive: 60
+
+engine:
+  cooldown: 1.5             # seconds between accepted casts; raise if casts double-fire
+  event_history: 50         # events kept for the console log
+
+server:
+  enabled: true
+  bind: 0.0.0.0             # unauthenticated on the LAN until SPEC.md R3.3 lands
+  port: 8080
+  jpeg_quality: 70

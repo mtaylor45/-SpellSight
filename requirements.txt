@@ -1,0 +1,8 @@
+# Runtime dependencies. New additions need a justification in the PR description,
+# and anything hardware-specific must be an optional import with a fallback.
+numpy>=1.24
+opencv-python-headless>=4.8    # headless: this device has no display, and the GUI build drags in X11
+paho-mqtt>=2.0
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn>=0.27

@@ -1,0 +1,19 @@
+services:
+  wandportal:
+    build: .
+    container_name: wandportal
+    restart: unless-stopped
+    # A USB camera can't be scheduled across a swarm. If you deploy this as a
+    # stack, pin it to the node the camera is plugged into.
+    devices:
+      - /dev/video0:/dev/video0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      WAND_MQTT_HOST: "${WAND_MQTT_HOST:-localhost}"
+      WAND_MQTT_PORT: "${WAND_MQTT_PORT:-1883}"
+      WAND_MQTT_USERNAME: "${WAND_MQTT_USERNAME:-}"
+      WAND_MQTT_PASSWORD: "${WAND_MQTT_PASSWORD:-}"

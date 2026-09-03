@@ -88,6 +88,13 @@ on demand.
 gesture five or six times, the same way each time, at the same distance. Each
 clean pass appears as a thumbnail — delete any that look wrong. Repeat per spell.
 
+[`docs/images/spellbook.png`](docs/images/spellbook.png) is a reference chart of
+wand movements for 24 of the catalog's spells — a starting vocabulary, not a
+requirement, since the recognizer learns whatever you actually wave. Regenerate
+it from the catalog with `python tools/make_spellbook.py`.
+
+![Wand movements for the trainable spells](docs/images/spellbook.png)
+
 **4. Check separation.** Back in Tune, press *Check spell separation*. This runs
 leave-one-out over your stored samples and names any pair that reads as each
 other. If Lumos and Incendio are getting confused, redraw one of them rather than

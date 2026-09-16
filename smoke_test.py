@@ -5,7 +5,7 @@ import numpy as np
 from wandportal import config as cfgmod
 from wandportal.recognizer import Recognizer, normalize, resample
 from wandportal.tracker import BlobTracker, render_trace, path_length
-from wandportal.spells import resolve, CATALOG
+from wandportal.spells import resolve, CATALOG, BY_ID
 
 # --- config
 cfg = cfgmod.load("config.yaml")
@@ -93,3 +93,84 @@ print("tracked loop ->", m.spell_id, round(m.confidence,3))
 assert resample([(1,1),(1,1)], 8).shape == (8,2)
 assert abs(np.linalg.norm(normalize(line(0,0,10,10)))-1) < 1e-9
 print("edge cases ok")
+
+# --- the frozen MQTT interface (SPEC.md section 4)
+# Topic shapes, retain flags, payload keys and entity object_ids are what Home
+# Assistant automations are written against. These assertions exist so that
+# changing one fails here instead of in somebody's house.
+import json, time
+from wandportal.mqtt_bridge import MqttBridge
+
+class StubClient:
+    """Stands in for paho, capturing what would go on the wire."""
+    def __init__(self): self.sent = []
+    def publish(self, topic, payload="", qos=0, retain=False):
+        self.sent.append((topic, payload, retain))
+    def topics(self): return [t for t, _, _ in self.sent]
+    def find(self, topic):
+        for t, payload, retain in self.sent:
+            if t == topic:
+                return payload, retain
+        raise AssertionError(f"nothing published to {topic!r}; got {self.topics()}")
+
+mcfg = cfgmod.load("config.yaml").mqtt
+mcfg.pulse_seconds = 0.05
+bridge = MqttBridge(mcfg, resolve(["lumos", "nox"]))
+stub = StubClient(); bridge._client = stub; bridge.connected = True
+
+assert bridge.t_status == "wand/status", bridge.t_status
+assert bridge.t_last == "wand/last_spell", bridge.t_last
+assert bridge.t_attrs == "wand/last_spell/attributes", bridge.t_attrs
+assert bridge.t_event == "wand/event", bridge.t_event
+assert bridge.t_spell("lumos") == "wand/spell/lumos/state", bridge.t_spell("lumos")
+
+bridge.cast(BY_ID["lumos"], 0.93, 1.25)
+payload, retain = stub.find("wand/spell/lumos/state")
+assert payload == "ON" and retain is False, (payload, retain)
+payload, retain = stub.find("wand/last_spell")
+assert payload == "Lumos" and retain is True, (payload, retain)
+attrs, retain = stub.find("wand/last_spell/attributes")
+assert retain is True, "last_spell attributes must be retained"
+attrs = json.loads(attrs)
+assert set(attrs) == {"spell_id", "confidence", "duration", "effect", "cast_at"}, sorted(attrs)
+assert attrs["spell_id"] == "lumos" and attrs["confidence"] == 0.93, attrs
+event, retain = stub.find("wand/event")
+assert retain is False, "wand/event must not be retained"
+assert set(json.loads(event)) == {"spell", "name", "confidence"}, sorted(json.loads(event))
+
+time.sleep(0.25)   # pulse_seconds elapses on its own timer thread
+assert ("wand/spell/lumos/state", "OFF", False) in stub.sent, "no OFF after the pulse"
+
+stub.sent.clear()
+bridge.publish_discovery()
+cfgd, retain = stub.find("homeassistant/binary_sensor/wand/lumos/config")
+assert retain is True, "discovery configs must be retained"
+cfgd = json.loads(cfgd)
+assert cfgd["object_id"] == "wand_lumos", cfgd["object_id"]
+assert cfgd["unique_id"] == "wand_lumos", cfgd["unique_id"]
+assert cfgd["state_topic"] == "wand/spell/lumos/state", cfgd["state_topic"]
+assert cfgd["availability_topic"] == "wand/status", cfgd["availability_topic"]
+assert cfgd["device"]["identifiers"] == ["wand"], cfgd["device"]["identifiers"]
+sensor = json.loads(stub.find("homeassistant/sensor/wand/last_spell/config")[0])
+assert sensor["object_id"] == "wand_last_spell", sensor["object_id"]
+assert sensor["json_attributes_topic"] == "wand/last_spell/attributes", sensor
+assert sensor["device"]["identifiers"] == ["wand"], "entities must share one device"
+
+stub.sent.clear()
+bridge.remove_discovery()
+cleared, retain = stub.find("homeassistant/binary_sensor/wand/lumos/config")
+assert cleared == "" and retain is True, "clearing discovery needs an empty retained payload"
+
+# A renamed base_topic must move every topic together, not just some.
+alt = cfgmod.load("config.yaml").mqtt
+alt.base_topic = "attic_wand"
+b2 = MqttBridge(alt, resolve(["lumos"]))
+s2 = StubClient(); b2._client = s2; b2.connected = True
+b2.cast(BY_ID["lumos"], 0.9, 1.0)
+assert all(t.startswith("attic_wand/") for t in s2.topics()), s2.topics()
+
+# With no broker a cast is dropped, not queued and fired later in a burst.
+b3 = MqttBridge(cfgmod.load("config.yaml").mqtt, resolve(["lumos"]))
+b3.cast(BY_ID["lumos"], 0.9, 1.0)          # _client is None until start()
+assert not b3.connected
+print("mqtt contract ok (SPEC.md section 4)")

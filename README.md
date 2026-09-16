@@ -43,8 +43,15 @@ Retroreflection is directional — LEDs off to the side kill your signal.
 ### Docker
 
 ```bash
-cp config.yaml config.local.yaml     # edit mqtt.host at minimum
+$EDITOR config.yaml                  # set mqtt.host at minimum
 docker compose up -d --build
+```
+
+The compose file mounts `./config.yaml` read-only, so edit it in place. To leave
+it untouched, point at your broker from the environment instead:
+
+```bash
+WAND_MQTT_HOST=192.168.0.40 docker compose up -d --build
 ```
 
 Then open `http://<host>:8080`.

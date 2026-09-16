@@ -1,0 +1,46 @@
+# The regression suites. Both must pass with no camera and no broker attached —
+# that is the property CLAUDE.md asks for, and the only thing standing between a
+# renamed MQTT topic and somebody's broken Home Assistant automations.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # Same pair the Dockerfile installs: opencv-python-headless still wants
+      # glib, and libgomp backs its threading layer.
+      - name: System libraries for opencv-python-headless
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libglib2.0-0 libgomp1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint
+        run: |
+          pip install pyflakes
+          pyflakes wandportal/
+
+      - name: smoke_test — tracker, recognizer, and the frozen MQTT contract
+        run: python smoke_test.py
+
+      - name: api_test — the full HTTP API against a fake camera
+        run: python api_test.py

@@ -232,7 +232,8 @@ class Engine:
         return {
             "mode": self.mode,
             "training_spell": self.training_spell,
-            "camera_fps": self.camera.fps,
+            "camera_fps": self.camera.fps,          # kept: existing console key
+            "camera": self.camera.health(),
             "tracker_state": self.tracker.state.value,
             "detecting": self.tracker.detection is not None,
             "mqtt_connected": self.mqtt.connected,

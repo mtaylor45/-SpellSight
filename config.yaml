@@ -11,6 +11,9 @@ camera:
   flip_horizontal: true  # mirror it — casting feels wrong otherwise
   flip_vertical: false
   rotate: 0
+  reopen_delay: 2.0          # first wait before retrying a camera that won't open
+  reopen_max_delay: 30.0     # backoff ceiling, so a permanently absent camera stays quiet
+  reopen_after_failures: 60  # consecutive failed reads before tearing down and reopening
 
 tracker:
   threshold: 220         # tune this first, in the console's Tune mode

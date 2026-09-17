@@ -174,3 +174,74 @@ b3 = MqttBridge(cfgmod.load("config.yaml").mqtt, resolve(["lumos"]))
 b3.cast(BY_ID["lumos"], 0.9, 1.0)          # _client is None until start()
 assert not b3.connected
 print("mqtt contract ok (SPEC.md section 4)")
+
+# --- camera resilience (plan G1, G4)
+# The capture loop is driven against a stub VideoCapture so an absent camera and
+# an unplug/replug can be exercised with no hardware. This is the failure mode
+# that used to kill the process at startup, which under Restart=always is a boot
+# loop on the one device that must survive being unplugged.
+import threading
+import wandportal.camera as camera_mod
+from wandportal.camera import Camera
+
+class FakeCapture:
+    """Minimal stand-in for cv2.VideoCapture, driven by module-level state."""
+    def __init__(self, source): self.released = False
+    def isOpened(self): return FAKE["openable"]
+    def set(self, *a): return True
+    def get(self, prop): return 0
+    def release(self): self.released = True
+    def read(self):
+        if not FAKE["readable"]:
+            return False, None
+        return True, np.zeros((16, 16, 3), np.uint8)
+
+FAKE = {"openable": False, "readable": True, "opens": 0}
+def fake_videocapture(source):
+    FAKE["opens"] += 1
+    return FakeCapture(source)
+
+real_videocapture = camera_mod.cv2.VideoCapture
+camera_mod.cv2.VideoCapture = fake_videocapture
+try:
+    ccfg = cfgmod.load("config.yaml").camera
+    ccfg.reopen_delay = 0.05
+    ccfg.reopen_max_delay = 0.05
+    ccfg.reopen_after_failures = 3
+    cam = Camera(ccfg)
+
+    # 1. No camera at all: start() must not raise, and the thread must survive.
+    FAKE["openable"] = False
+    cam.start()
+    time.sleep(0.25)
+    assert cam._thread.is_alive(), "capture thread died with no camera"
+    assert cam.opened is False, "claimed to be open with no camera"
+    assert cam.last_error and "could not open" in cam.last_error, cam.last_error
+    assert cam.read() == (0, None), cam.read()
+    assert cam.health()["opened"] is False and cam.health()["reopens"] == 0
+
+    # 2. Camera appears: the loop picks it up on its own, no restart.
+    FAKE["openable"] = True
+    time.sleep(0.3)
+    assert cam.opened is True, f"did not recover when the camera appeared ({cam.last_error})"
+    seq, frame = cam.read()
+    assert frame is not None and seq > 0, (seq, frame)
+    assert cam.last_error is None, cam.last_error
+
+    # 3. Unplug: reads start failing, and it reopens rather than wedging.
+    before = cam.reopens
+    FAKE["readable"] = False
+    time.sleep(0.4)
+    assert cam.reopens > before, "a dead camera never triggered a reopen"
+
+    # 4. Replug: recovers without a restart.
+    FAKE["readable"] = True
+    time.sleep(0.4)
+    assert cam.opened is True, "did not recover after the camera came back"
+    seq2, frame2 = cam.read()
+    assert frame2 is not None and seq2 > seq, (seq, seq2)
+    print(f"camera resilience ok (reopens={cam.reopens}, opens={FAKE['opens']})")
+    cam.stop()
+    assert not cam._thread.is_alive(), "capture thread outlived stop()"
+finally:
+    camera_mod.cv2.VideoCapture = real_videocapture

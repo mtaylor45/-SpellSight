@@ -20,6 +20,11 @@ class CameraConfig:
     flip_horizontal: bool = False
     flip_vertical: bool = False
     rotate: int = 0              # 0, 90, 180, 270
+    # A missing or re-enumerating camera is expected, not exceptional: the
+    # capture thread keeps retrying instead of letting the process die.
+    reopen_delay: float = 2.0            # first retry wait, seconds
+    reopen_max_delay: float = 30.0       # backoff ceiling
+    reopen_after_failures: int = 60      # consecutive bad reads before reopening
 
 
 @dataclass

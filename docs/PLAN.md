@@ -76,7 +76,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** CI green on the PR. Renaming any topic or payload key fails a test. `python -m wandportal` writes templates under `./data` on a bare checkout; Docker still uses `/data` via the env var.
 **Depends on.** nothing
 
-### Day 2 — Camera resilience and honest status `[ ]`
+### Day 2 — Camera resilience and honest status `[~]` — [PR #4](https://github.com/mtaylor45/-SpellSight/pull/4)
 **Goal.** Survive a missing or re-enumerating camera, and say so out loud.
 **Closes.** G1, G4
 **Changes.** `Engine.start()` no longer dies when the camera is absent; the capture thread retries with backoff and the app reaches a serving state. Track `opened`, `last_error`, `reopens`. Surface them in `/api/status` and the console header.

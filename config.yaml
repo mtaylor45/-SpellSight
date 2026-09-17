@@ -30,7 +30,10 @@ recognizer:
   rotation_invariant: false   # keep false: orientation distinguishes spells
   min_confidence: 0.82
   min_margin: 0.03
-  templates_path: /data/templates.json
+  # Relative to the working directory. Docker overrides this to /data via
+  # WAND_RECOGNIZER_TEMPLATES_PATH; an absolute /data here would break a bare
+  # checkout and the systemd unit, which only grants write to its own data dir.
+  templates_path: data/templates.json
 
 mqtt:
   enabled: true

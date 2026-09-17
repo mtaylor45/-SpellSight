@@ -69,7 +69,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 
 ## Days
 
-### Day 1 — Guardrails `[ ]`
+### Day 1 — Guardrails `[~]` — [PR #4](https://github.com/mtaylor45/-SpellSight/pull/4)
 **Goal.** Make it impossible to break the frozen interface quietly, and clear the two known bugs.
 **Closes.** G6, G7, G8, G9
 **Changes.** GitHub Actions workflow running both suites on push and PR (Python 3.11, installs `requirements.txt` + `requirements-dev.txt`). MQTT contract tests against a stub paho client, asserting every topic shape, retain flag, payload key and entity `object_id` in SPEC.md §4. `templates_path` back to the relative default. README Docker snippet corrected to match compose.

@@ -288,3 +288,60 @@ assert os.path.isfile(bcfg.templates_path), "live templates file missing"
 restored = json.loads(open(os.path.join(bdir, backups[-1])).read())
 assert "samples" in restored and restored["samples"]["lumos"], "backup is not a usable templates file"
 print(f"template backups ok (ring of {len(backups)}, newest restorable)")
+
+# --- ambient estimation and the threshold seam (plan G3, spec R2.2 groundwork)
+from wandportal.tracker import AmbientEstimator
+
+# A dim room with one blazing retroreflector in it.
+room = np.full((480, 640), 40, np.uint8)
+cv2.circle(room, (320, 240), 6, 255, -1)
+
+est = AmbientEstimator(percentile=99.0, interval=1, width=160)
+with_wand = est.update(room)                      # wand counted
+est2 = AmbientEstimator(percentile=99.0, interval=1, width=160)
+without_wand = est2.update(room, exclude=(320.0, 240.0))   # wand excluded
+assert without_wand <= 45, f"a stationary wand inflated ambient to {without_wand}"
+assert without_wand < with_wand or with_wand <= 45, (with_wand, without_wand)
+print(f"ambient ok (room 40 -> {without_wand:.0f} with the wand excluded)")
+
+# It must track the room, not the wand: brighten the room and it follows.
+bright = np.full((480, 640), 180, np.uint8)
+cv2.circle(bright, (320, 240), 6, 255, -1)
+est3 = AmbientEstimator(percentile=99.0, interval=1, width=160)
+assert est3.update(bright, exclude=(320.0, 240.0)) > 170, "ambient did not follow a bright room"
+
+# Recomputed only every `interval` frames, holding the previous value between.
+est4 = AmbientEstimator(percentile=99.0, interval=5, width=160)
+first = est4.update(room)
+for _ in range(3):
+    assert est4.update(bright) == first, "ambient recomputed before its interval"
+
+# Cost, on the downscaled frame — this runs inside the capture loop.
+est5 = AmbientEstimator(percentile=99.0, interval=1, width=160)
+t0 = time.perf_counter()
+for _ in range(200):
+    est5.update(room, exclude=(320.0, 240.0))
+per_call_ms = (time.perf_counter() - t0) / 200 * 1000
+assert per_call_ms < 5.0, f"ambient estimate costs {per_call_ms:.2f}ms per recalculation"
+print(f"ambient cost {per_call_ms:.3f}ms per recalculation "
+      f"(every {cfg.tracker.ambient_interval} frames)")
+
+# threshold_mode: fixed must leave the cutoff exactly where it was.
+tcfg = cfgmod.load("config.yaml").tracker
+assert tcfg.threshold_mode == "fixed", tcfg.threshold_mode
+tr2 = BlobTracker(tcfg)
+assert tr2.working_threshold == tcfg.threshold, (tr2.working_threshold, tcfg.threshold)
+assert tr2.headroom is None, "headroom reported before any ambient measurement"
+tr2.detect(room)
+assert tr2.working_threshold == tcfg.threshold, "fixed mode moved the cutoff"
+assert tr2.ambient.value is not None and tr2.headroom is not None
+assert abs(tr2.headroom - (tcfg.threshold - tr2.ambient.value)) < 0.11, tr2.headroom
+print(f"threshold seam ok (mode={tcfg.threshold_mode}, cutoff={tr2.working_threshold}, "
+      f"headroom={tr2.headroom})")
+
+# adaptive is refused until day 8 rather than silently behaving as fixed.
+acfg = cfgmod.load("config.yaml")
+acfg.tracker.threshold_mode = "adaptive"
+assert any("not implemented yet" in p for p in validate(acfg)), validate(acfg)
+acfg.tracker.threshold_mode = "sideways"
+assert any("must be 'fixed' or 'adaptive'" in p for p in validate(acfg)), validate(acfg)

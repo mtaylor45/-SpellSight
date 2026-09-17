@@ -49,6 +49,9 @@ class RecognizerConfig:
     min_confidence: float = 0.82
     min_margin: float = 0.03     # gap required between best and runner-up
     templates_path: str = "data/templates.json"
+    # Training is an evening's work and `clear` is one tap away, so keep a short
+    # ring of previous saves beside the live file. 0 disables.
+    template_backups: int = 5
 
 
 @dataclass
@@ -111,6 +114,73 @@ def _apply_env(section_name: str, section: Any) -> None:
             continue
         current = getattr(section, f.name)
         setattr(section, f.name, _coerce(raw, type(current)))
+
+
+def validate(cfg: Config) -> list[str]:
+    """Collect every problem with a config, rather than raising on the first.
+
+    A misconfigured device is found at 11pm by someone holding a wand, not at a
+    terminal. Reporting all of it at once beats fixing one typo per restart.
+    """
+    from .spells import BY_ID                      # local: avoids a config->spells cycle
+
+    problems: list[str] = []
+
+    unknown = [s for s in cfg.spells if s not in BY_ID]
+    if unknown:
+        problems.append(
+            f"unknown spell id(s): {', '.join(sorted(unknown))}. "
+            f"Run `python -m wandportal --list-spells` for the {len(BY_ID)} valid ids."
+        )
+    if not cfg.spells:
+        problems.append("spells: is empty — nothing would ever be recognized or discovered")
+
+    t = cfg.tracker
+    if not 1 <= t.threshold <= 254:
+        problems.append(f"tracker.threshold {t.threshold} is outside 1..254")
+    if t.min_area <= 0:
+        problems.append(f"tracker.min_area {t.min_area} must be above 0")
+    if t.min_area >= t.max_area:
+        problems.append(
+            f"tracker.min_area ({t.min_area}) must be below tracker.max_area "
+            f"({t.max_area}); an inverted area window matches nothing"
+        )
+    if t.lost_frames < 1:
+        problems.append(f"tracker.lost_frames {t.lost_frames} must be at least 1")
+    if t.min_points < 2:
+        problems.append(f"tracker.min_points {t.min_points} must be at least 2")
+    if not 0.0 <= t.smoothing < 1.0:
+        problems.append(f"tracker.smoothing {t.smoothing} must be in 0.0..0.99")
+    if t.max_duration <= 0:
+        problems.append(f"tracker.max_duration {t.max_duration} must be above 0")
+
+    r = cfg.recognizer
+    if r.resample_points < 8:
+        problems.append(f"recognizer.resample_points {r.resample_points} must be at least 8")
+    if not 0.0 <= r.min_confidence <= 1.0:
+        problems.append(f"recognizer.min_confidence {r.min_confidence} must be in 0.0..1.0")
+    if not 0.0 <= r.min_margin <= 1.0:
+        problems.append(f"recognizer.min_margin {r.min_margin} must be in 0.0..1.0")
+
+    c = cfg.camera
+    if c.width <= 0 or c.height <= 0:
+        problems.append(f"camera resolution {c.width}x{c.height} is not positive")
+    if c.rotate not in (0, 90, 180, 270):
+        problems.append(f"camera.rotate {c.rotate} must be one of 0, 90, 180, 270")
+    if c.reopen_delay <= 0 or c.reopen_max_delay < c.reopen_delay:
+        problems.append(
+            f"camera.reopen_delay ({c.reopen_delay}) must be above 0 and at most "
+            f"camera.reopen_max_delay ({c.reopen_max_delay})"
+        )
+
+    if not 1 <= cfg.server.port <= 65535:
+        problems.append(f"server.port {cfg.server.port} is outside 1..65535")
+    if not 1 <= cfg.mqtt.port <= 65535:
+        problems.append(f"mqtt.port {cfg.mqtt.port} is outside 1..65535")
+    if cfg.mqtt.pulse_seconds <= 0:
+        problems.append(f"mqtt.pulse_seconds {cfg.mqtt.pulse_seconds} must be above 0")
+
+    return problems
 
 
 def load(path: str | None = None) -> Config:

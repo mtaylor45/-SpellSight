@@ -19,9 +19,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import logging
+
 import numpy as np
 
 from .config import RecognizerConfig
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -132,9 +136,34 @@ class Recognizer:
                 "rotation_invariant": self.cfg.rotation_invariant,
                 "samples": self.samples,
             }
+            self._rotate_backups()
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload))
             tmp.replace(self.path)
+
+    def _rotate_backups(self) -> None:
+        """Copy the current templates aside before overwriting them.
+
+        Retraining a spell badly, or a stray clear, otherwise destroys the only
+        copy of an evening's work. Cheap insurance: the file is a few KB.
+        Called with the lock held, and never allowed to fail a save.
+        """
+        keep = getattr(self.cfg, "template_backups", 0)
+        if keep <= 0 or not self.path.is_file():
+            return
+        try:
+            # Millisecond suffix: samples recorded in the same second would
+            # otherwise collide on one name and overwrite each other's backup.
+            now = time.time()
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + f"-{int(now * 1000) % 1000:03d}"
+            backup = self.path.with_name(f"{self.path.stem}.{stamp}.bak.json")
+            backup.write_bytes(self.path.read_bytes())
+            existing = sorted(self.path.parent.glob(f"{self.path.stem}.*.bak.json"))
+            for stale in existing[:-keep]:
+                stale.unlink(missing_ok=True)
+        except OSError as exc:
+            # A full or read-only /data must not stop the sample being recorded.
+            log.warning("Could not rotate templates backup: %s", exc)
 
     def _rebuild(self) -> None:
         self._vectors = {

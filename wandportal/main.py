@@ -36,6 +36,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = config_module.load(args.config)
+
+    problems = config_module.validate(cfg)
+    if problems:
+        logging.error("Refusing to start — %d problem(s) in %s:", len(problems), cfg.config_path)
+        for problem in problems:
+            logging.error("  - %s", problem)
+        return 2
+
     engine = Engine(cfg)
 
     stopping = False

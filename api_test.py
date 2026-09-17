@@ -74,6 +74,23 @@ r = c.post("/api/tune", json={"threshold": 240, "min_confidence": 0.9})
 assert r.json()["tracker"]["threshold"] == 240
 assert r.json()["recognizer"]["min_confidence"] == 0.9
 
+# Out-of-range tuning is refused, and recognition keeps the values it had.
+# These arrive from a slider on a phone; applied blindly they stop the wand
+# being detected at all, which looks exactly like broken hardware.
+for bad in ({"threshold": -5}, {"threshold": 9999}, {"min_confidence": 1.5},
+            {"lost_frames": 0}, {"min_area": 0}, {"cooldown": -1}):
+    resp = c.post("/api/tune", json=bad)
+    assert resp.status_code == 422, f"{bad} returned {resp.status_code}"
+    field = list(bad)[0]
+    assert field in resp.text, f"422 for {bad} does not name the field: {resp.text[:160]}"
+# An inverted area window passes per-field bounds but matches nothing.
+resp = c.post("/api/tune", json={"min_area": 900, "max_area": 500})
+assert resp.status_code == 422 and "max_area" in resp.text, resp.text[:160]
+live = c.get("/api/status").json()
+assert live["tracker"]["threshold"] == 240, live["tracker"]["threshold"]
+assert live["recognizer"]["min_confidence"] == 0.9, live["recognizer"]["min_confidence"]
+print("tuning bounds ok (6 rejected, state intact)")
+
 assert c.post("/api/mode", json={"mode":"bogus"}).status_code == 400
 assert c.post("/api/cast/lumos").status_code == 200      # mqtt off -> logs a warning
 assert c.post("/api/cast/nosuch").status_code == 404

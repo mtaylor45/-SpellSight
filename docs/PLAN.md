@@ -15,7 +15,10 @@ that constrain how). Where this plan and SPEC.md disagree, SPEC.md wins.
 
 ## Principles for every day
 
-1. **One day, one PR.** Small enough to review in a sitting.
+1. **One day, one PR, one branch** named `claude/plan-day-<N>-<YYYYMMDD>`, cut
+   fresh from the latest `main` (or from the previous day's branch when they
+   overlap). Small enough to review in a sitting. Reusing a branch whose PR has
+   already merged strands the work on a closed PR — that happened twice.
 2. **Both suites pass** with no camera and no broker before anything is pushed:
    `python smoke_test.py && python api_test.py`.
 3. **The frozen interface in SPEC.md §4 does not move.** Adding topics under
@@ -69,21 +72,21 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 
 ## Days
 
-### Day 1 — Guardrails `[~]` — [PR #4](https://github.com/mtaylor45/-SpellSight/pull/4)
+### Day 1 — Guardrails `[x]` — [PR #4](https://github.com/mtaylor45/-SpellSight/pull/4)
 **Goal.** Make it impossible to break the frozen interface quietly, and clear the two known bugs.
 **Closes.** G6, G7, G8, G9
 **Changes.** GitHub Actions workflow running both suites on push and PR (Python 3.11, installs `requirements.txt` + `requirements-dev.txt`). MQTT contract tests against a stub paho client, asserting every topic shape, retain flag, payload key and entity `object_id` in SPEC.md §4. `templates_path` back to the relative default. README Docker snippet corrected to match compose.
 **Acceptance.** CI green on the PR. Renaming any topic or payload key fails a test. `python -m wandportal` writes templates under `./data` on a bare checkout; Docker still uses `/data` via the env var.
 **Depends on.** nothing
 
-### Day 2 — Camera resilience and honest status `[~]` — [PR #4](https://github.com/mtaylor45/-SpellSight/pull/4)
+### Day 2 — Camera resilience and honest status `[~]` — [PR #5](https://github.com/mtaylor45/-SpellSight/pull/5)
 **Goal.** Survive a missing or re-enumerating camera, and say so out loud.
 **Closes.** G1, G4
 **Changes.** `Engine.start()` no longer dies when the camera is absent; the capture thread retries with backoff and the app reaches a serving state. Track `opened`, `last_error`, `reopens`. Surface them in `/api/status` and the console header.
 **Acceptance.** `python -m wandportal` with no camera reaches "watching for spells", serves the console, and reports `opened: false` with a reason. Unplug/replug (simulated by a stub source) increments `reopens` and recovers without a restart. Docker `restart: unless-stopped` no longer boot-loops on a host with no `/dev/video0`.
 **Depends on.** day 1
 
-### Day 3 — Config safety `[ ]`
+### Day 3 — Config safety `[~]` — [PR #6](https://github.com/mtaylor45/-SpellSight/pull/6)
 **Goal.** Stop a phone slider or a typo from bricking recognition.
 **Closes.** G11, G12, G13
 **Changes.** Bounds on every `TuneRequest` field, rejecting out-of-range with 422 and a readable message. Startup config validation that reports every problem at once (unknown spell ids, impossible ranges) and exits with a clear message, not a traceback. Rotate `templates.json` to a small ring of timestamped backups on each save.

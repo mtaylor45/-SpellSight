@@ -54,6 +54,12 @@ assert s["mode"] == "run"
 assert set(s["camera"]) == {"opened", "fps", "reopens", "last_error", "source"}, sorted(s["camera"])
 assert s["camera"]["opened"] is True and s["camera"]["reopens"] == 0, s["camera"]
 assert "camera_fps" in s, "the console's existing camera_fps key must survive"
+# Ambient, the cutoff in force, and headroom — the numbers the hardware session
+# reads. In fixed mode the cutoff must equal the configured threshold exactly.
+for key in ("threshold_mode", "working_threshold", "ambient", "headroom"):
+    assert key in s["tracker"], f"status is missing tracker.{key}"
+assert s["tracker"]["threshold_mode"] == "fixed", s["tracker"]["threshold_mode"]
+assert s["tracker"]["working_threshold"] == s["tracker"]["threshold"], s["tracker"]
 
 r = c.post("/api/mode", json={"mode":"train","spell_id":"lumos"})
 assert r.status_code == 200, r.text

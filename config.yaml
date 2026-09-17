@@ -16,7 +16,14 @@ camera:
   reopen_after_failures: 60  # consecutive failed reads before tearing down and reopening
 
 tracker:
+  # "fixed" is Phase 1 behaviour. "adaptive" (spec R2.2) lands on day 8; the
+  # ambient estimate below is measured either way, so you can watch headroom
+  # in the console before anything depends on it.
+  threshold_mode: fixed
   threshold: 220         # tune this first, in the console's Tune mode
+  ambient_percentile: 99.0   # scene brightness percentile, wand excluded
+  ambient_interval: 15       # frames between ambient recalculations
+  ambient_width: 160         # frame is downscaled to this width first
   blur: 3
   min_area: 2
   max_area: 500

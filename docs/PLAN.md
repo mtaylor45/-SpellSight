@@ -79,21 +79,21 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** CI green on the PR. Renaming any topic or payload key fails a test. `python -m wandportal` writes templates under `./data` on a bare checkout; Docker still uses `/data` via the env var.
 **Depends on.** nothing
 
-### Day 2 — Camera resilience and honest status `[~]` — [PR #5](https://github.com/mtaylor45/-SpellSight/pull/5)
+### Day 2 — Camera resilience and honest status `[x]` — [PR #5](https://github.com/mtaylor45/-SpellSight/pull/5)
 **Goal.** Survive a missing or re-enumerating camera, and say so out loud.
 **Closes.** G1, G4
 **Changes.** `Engine.start()` no longer dies when the camera is absent; the capture thread retries with backoff and the app reaches a serving state. Track `opened`, `last_error`, `reopens`. Surface them in `/api/status` and the console header.
 **Acceptance.** `python -m wandportal` with no camera reaches "watching for spells", serves the console, and reports `opened: false` with a reason. Unplug/replug (simulated by a stub source) increments `reopens` and recovers without a restart. Docker `restart: unless-stopped` no longer boot-loops on a host with no `/dev/video0`.
 **Depends on.** day 1
 
-### Day 3 — Config safety `[~]` — [PR #6](https://github.com/mtaylor45/-SpellSight/pull/6)
+### Day 3 — Config safety `[x]` — [PR #6](https://github.com/mtaylor45/-SpellSight/pull/6) (to main via [#7](https://github.com/mtaylor45/-SpellSight/pull/7))
 **Goal.** Stop a phone slider or a typo from bricking recognition.
 **Closes.** G11, G12, G13
 **Changes.** Bounds on every `TuneRequest` field, rejecting out-of-range with 422 and a readable message. Startup config validation that reports every problem at once (unknown spell ids, impossible ranges) and exits with a clear message, not a traceback. Rotate `templates.json` to a small ring of timestamped backups on each save.
 **Acceptance.** `threshold: -5` and `threshold: 9999` are refused and recognition is unaffected. A typo'd spell id names the offender and the valid ids without a stack trace. Ten saves leave the newest N backups and no unbounded growth.
 **Depends on.** day 1
 
-### Day 4 — Ambient estimation and the `threshold_mode` seam `[ ]`
+### Day 4 — Ambient estimation and the `threshold_mode` seam `[~]` — [PR #8](https://github.com/mtaylor45/-SpellSight/pull/8)
 **Goal.** Measure ambient without changing a single recognition decision.
 **Closes.** G3 · **Starts.** R2.2
 **Changes.** `threshold_mode: fixed | adaptive` in `TrackerConfig`, defaulting to `fixed`. Ambient estimator — configurable percentile of a downscaled grayscale frame, recomputed every N frames, excluding the tracked blob's neighbourhood — behind an interface a differencing source (R2.4) can also satisfy. Ambient, working threshold and headroom in `/api/status` and the Tune panel.
@@ -124,7 +124,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 ### Day 8 — Adaptive threshold `[ ]` **HW** (constants only)
 **Goal.** Finish R2.2 with the policy switched off until measured.
 **Implements.** R2.2
-**Changes.** `adaptive` mode: `clamp(ambient + margin, floor, 254)`. `fixed` stays the default. Config gains `threshold_floor`, `threshold_margin`, `ambient_percentile`, `ambient_interval` with SPEC's starting values.
+**Changes.** Enables `threshold_mode: adaptive`, which day 4 deliberately refuses at startup rather than letting it silently behave as fixed. `adaptive` mode: `clamp(ambient + margin, floor, 254)`. `fixed` stays the default. Config gains `threshold_floor`, `threshold_margin`, `ambient_percentile`, `ambient_interval` with SPEC's starting values.
 **Acceptance.** A simulated ambient step from 40 to 180 tracks within 3 recalculation intervals. `fixed` reproduces day-1 behaviour exactly and the suites pass unmodified. Real constants deferred to the tuning session.
 **Depends on.** day 4
 

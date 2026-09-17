@@ -241,6 +241,13 @@ class Engine:
             "error": self.error,
             "tracker": {
                 "threshold": self.cfg.tracker.threshold,
+                "threshold_mode": self.cfg.tracker.threshold_mode,
+                # The cutoff actually in force. Identical to threshold in fixed
+                # mode; spec R2.2 makes these diverge.
+                "working_threshold": self.tracker.working_threshold,
+                "ambient": (round(self.tracker.ambient.value, 1)
+                            if self.tracker.ambient.value is not None else None),
+                "headroom": self.tracker.headroom,
                 "min_area": self.cfg.tracker.min_area,
                 "max_area": self.cfg.tracker.max_area,
                 "lost_frames": self.cfg.tracker.lost_frames,

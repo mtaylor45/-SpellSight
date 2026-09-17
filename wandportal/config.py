@@ -29,7 +29,15 @@ class CameraConfig:
 
 @dataclass
 class TrackerConfig:
+    # "fixed" is the Phase 1 behaviour and the baseline the tests assert
+    # against. "adaptive" (spec R2.2) tracks measured ambient instead and
+    # arrives on day 8; the estimator below already runs in both modes,
+    # because wand/health needs ambient regardless of what sets the cutoff.
+    threshold_mode: str = "fixed"
     threshold: int = 220         # grayscale cutoff for the IR reflector
+    ambient_percentile: float = 99.0   # of the scene, not counting the wand
+    ambient_interval: int = 15         # frames between recalculations
+    ambient_width: int = 160           # downscale before the percentile
     blur: int = 3                # gaussian kernel, odd, 0 disables
     min_area: float = 2.0        # px^2
     max_area: float = 500.0
@@ -136,6 +144,22 @@ def validate(cfg: Config) -> list[str]:
         problems.append("spells: is empty — nothing would ever be recognized or discovered")
 
     t = cfg.tracker
+    if t.threshold_mode == "adaptive":
+        problems.append(
+            "tracker.threshold_mode: 'adaptive' is not implemented yet (spec R2.2, "
+            "plan day 8). Use 'fixed'. The ambient estimate it needs is already "
+            "published, so you can watch headroom before switching."
+        )
+    elif t.threshold_mode != "fixed":
+        problems.append(
+            f"tracker.threshold_mode {t.threshold_mode!r} must be 'fixed' or 'adaptive'"
+        )
+    if not 1 <= t.ambient_percentile <= 100:
+        problems.append(f"tracker.ambient_percentile {t.ambient_percentile} must be in 1..100")
+    if t.ambient_interval < 1:
+        problems.append(f"tracker.ambient_interval {t.ambient_interval} must be at least 1")
+    if t.ambient_width < 16:
+        problems.append(f"tracker.ambient_width {t.ambient_width} must be at least 16")
     if not 1 <= t.threshold <= 254:
         problems.append(f"tracker.threshold {t.threshold} is outside 1..254")
     if t.min_area <= 0:

@@ -45,6 +45,9 @@
   }
   .pip.lit::before{background:var(--wandlight); box-shadow:0 0 8px var(--wandlight)}
   .pip.ok::before{background:var(--confirmed)}
+  .optics{font-variant-numeric:tabular-nums; opacity:.75; margin:0 0 .75rem; font-size:.9rem}
+  .optics.warn{opacity:1; color:var(--wandlight)}
+  .optics.bad{opacity:1; color:var(--refused)}
 
   h1{
     font-family:var(--serif); font-weight:600; font-size:1.35rem;
@@ -153,6 +156,7 @@
   <div id="tunePanel" hidden>
     <p class="note">The view above switches to the raw threshold mask. Adjust until the wand tip is the
       only white dot in the frame, then leave tune mode to save the setting into the running config.</p>
+    <div id="optics" class="optics">ambient —</div>
     <div id="dials"></div>
     <div class="row">
       <button class="btn" id="selfTest">Check spell separation</button>
@@ -233,6 +237,7 @@ function apply(s) {
   renderSpells(s.spells);
   renderLog(s.history);
   if (mode === "tune" && !$("dials").childElementCount) renderDials(s);
+  renderOptics(s);
 }
 
 function renderSpells(spells) {
@@ -325,6 +330,24 @@ function renderLog(history) {
       <span class="what"><em>${h.name}</em><span class="why">${detail}</span></span>`;
     log.appendChild(li);
   }
+}
+
+function renderOptics(s) {
+  // Headroom is the number the hardware session is actually measuring: how far
+  // the cutoff sits above the room. It shrinking is the early warning that the
+  // fixed threshold is about to stop working.
+  const el = $("optics");
+  if (!el) return;
+  const t = s.tracker || {};
+  if (t.ambient == null) { el.textContent = "ambient —"; el.className = "optics"; return; }
+  const head = t.headroom;
+  el.className = "optics" + (head <= 0 ? " bad" : head < 25 ? " warn" : "");
+  el.textContent = `ambient ${t.ambient} · cutoff ${t.working_threshold} · headroom ${head}`;
+  el.title = head <= 0
+      ? "The room is at or above the cutoff — the wand cannot stand out. Raise the threshold or cut ambient IR."
+      : head < 25
+      ? "Very little margin between the room and the cutoff."
+      : `threshold_mode: ${t.threshold_mode}`;
 }
 
 function renderDials(s) {

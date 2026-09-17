@@ -245,3 +245,46 @@ try:
     assert not cam._thread.is_alive(), "capture thread outlived stop()"
 finally:
     camera_mod.cv2.VideoCapture = real_videocapture
+
+# --- config safety (plan G11, G12, G13)
+# A misconfigured device is found at 11pm by someone holding a wand, not at a
+# terminal, so every problem should surface at once and nothing should be able
+# to silently stop detection.
+from wandportal.config import validate
+
+good = cfgmod.load("config.yaml")
+assert validate(good) == [], validate(good)
+
+bad = cfgmod.load("config.yaml")
+bad.spells = ["lumos", "wingardium_leviosaa", "not_a_spell"]
+bad.tracker.threshold = 300
+bad.tracker.min_area = 900.0          # above max_area: matches nothing
+bad.recognizer.min_confidence = 1.5
+bad.camera.rotate = 45
+bad.server.port = 0
+problems = validate(bad)
+joined = " | ".join(problems)
+assert len(problems) >= 6, problems          # every problem at once, not the first
+assert "wingardium_leviosaa" in joined and "not_a_spell" in joined, joined
+assert "threshold" in joined and "min_area" in joined, joined
+assert "min_confidence" in joined and "rotate" in joined and "port" in joined, joined
+assert "Traceback" not in joined
+empty = cfgmod.load("config.yaml"); empty.spells = []
+assert any("empty" in p for p in validate(empty)), validate(empty)
+print(f"config validation ok ({len(problems)} problems reported at once)")
+
+# templates backups: a ring, not unbounded growth
+bdir = tempfile.mkdtemp()
+bcfg = cfgmod.load("config.yaml").recognizer
+bcfg.templates_path = os.path.join(bdir, "templates.json")
+bcfg.template_backups = 3
+brec = Recognizer(bcfg)
+for i in range(10):
+    brec.add_sample("lumos", line(0, 0, 50 + i, 30))
+backups = sorted(p for p in os.listdir(bdir) if p.endswith(".bak.json"))
+assert len(backups) == 3, f"kept {len(backups)} backups, expected 3: {backups}"
+assert len(set(backups)) == 3, f"backup names collided in a burst: {backups}"
+assert os.path.isfile(bcfg.templates_path), "live templates file missing"
+restored = json.loads(open(os.path.join(bdir, backups[-1])).read())
+assert "samples" in restored and restored["samples"]["lumos"], "backup is not a usable templates file"
+print(f"template backups ok (ring of {len(backups)}, newest restorable)")

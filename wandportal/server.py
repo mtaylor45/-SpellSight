@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .engine import Engine
 
@@ -20,14 +20,21 @@ class ModeRequest(BaseModel):
 
 
 class TuneRequest(BaseModel):
-    threshold: int | None = None
-    min_area: float | None = None
-    max_area: float | None = None
-    lost_frames: int | None = None
-    min_path_length: float | None = None
-    cooldown: float | None = None
-    min_confidence: float | None = None
-    min_margin: float | None = None
+    """Bounds are deliberately wide but finite.
+
+    These come from a slider on a phone, and an out-of-range value does not fail
+    loudly — it silently stops the wand being detected at all, which looks like
+    broken hardware. FastAPI turns a violation into a 422 naming the field.
+    """
+
+    threshold: int | None = Field(None, ge=1, le=254)
+    min_area: float | None = Field(None, gt=0, le=10_000)
+    max_area: float | None = Field(None, gt=0, le=1_000_000)
+    lost_frames: int | None = Field(None, ge=1, le=300)
+    min_path_length: float | None = Field(None, ge=0, le=10_000)
+    cooldown: float | None = Field(None, ge=0, le=600)
+    min_confidence: float | None = Field(None, ge=0.0, le=1.0)
+    min_margin: float | None = Field(None, ge=0.0, le=1.0)
 
 
 def create_app(engine: Engine) -> FastAPI:
@@ -73,6 +80,15 @@ def create_app(engine: Engine) -> FastAPI:
     @app.post("/api/tune")
     async def tune(req: TuneRequest):
         t, r = engine.cfg.tracker, engine.cfg.recognizer
+        # Each field can be in range while the pair is nonsense. An inverted
+        # area window matches no blob at all, so reject it rather than apply it.
+        lo = req.min_area if req.min_area is not None else t.min_area
+        hi = req.max_area if req.max_area is not None else t.max_area
+        if lo >= hi:
+            raise HTTPException(
+                422, f"min_area ({lo}) must be below max_area ({hi}); "
+                     "an inverted area window matches nothing"
+            )
         for name in ("threshold", "min_area", "max_area", "lost_frames",
                      "min_path_length", "cooldown"):
             value = getattr(req, name)

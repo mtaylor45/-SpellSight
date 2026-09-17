@@ -37,6 +37,7 @@ recognizer:
   # WAND_RECOGNIZER_TEMPLATES_PATH; an absolute /data here would break a bare
   # checkout and the systemd unit, which only grants write to its own data dir.
   templates_path: data/templates.json
+  template_backups: 5        # previous saves kept beside the live file; 0 disables
 
 mqtt:
   enabled: true

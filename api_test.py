@@ -38,6 +38,10 @@ class FakeCam:
         f = frames[min(self.i, len(frames)-1)]
         self.i += 1
         return self.i, f
+    def health(self):
+        # Part of the frame-source contract, alongside start/stop/read.
+        return {"opened": True, "fps": self.fps, "reopens": 0,
+                "last_error": None, "source": "fake"}
 eng.camera = FakeCam()
 eng.start()
 
@@ -47,6 +51,9 @@ c = TestClient(app)
 s = c.get("/api/status").json()
 print("status keys:", sorted(s)[:6], "... spells:", len(s["spells"]))
 assert s["mode"] == "run"
+assert set(s["camera"]) == {"opened", "fps", "reopens", "last_error", "source"}, sorted(s["camera"])
+assert s["camera"]["opened"] is True and s["camera"]["reopens"] == 0, s["camera"]
+assert "camera_fps" in s, "the console's existing camera_fps key must survive"
 
 r = c.post("/api/mode", json={"mode":"train","spell_id":"lumos"})
 assert r.status_code == 200, r.text

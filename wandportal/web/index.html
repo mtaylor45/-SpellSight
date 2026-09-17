@@ -133,6 +133,7 @@
 <figure class="viewer">
   <img id="feed" src="/stream.mjpg" alt="Live infrared view with the wand trail drawn on it">
   <figcaption>
+    <span class="pip" id="pipCamera">camera</span>
     <span class="pip" id="pipDetect">no wand</span>
     <span class="pip" id="pipMqtt">Home Assistant</span>
     <span id="fps">— fps</span>
@@ -204,6 +205,15 @@ function apply(s) {
   $("tunePanel").hidden = mode !== "tune";
 
   $("fps").textContent = (s.camera_fps || 0).toFixed(0) + " fps";
+  // A camera that is absent or flapping has to be visible here — this device is
+  // concealed, so the console is the only place anyone would notice.
+  const cam = s.camera || {};
+  const c = $("pipCamera");
+  c.className = "pip" + (cam.opened ? " ok" : "");
+  c.textContent = cam.opened
+      ? (cam.reopens ? `camera ok (${cam.reopens} reopens)` : "camera ok")
+      : "camera unavailable";
+  c.title = cam.last_error || (cam.opened ? `source ${cam.source}` : "");
   const d = $("pipDetect");
   d.className = "pip" + (s.detecting ? " lit" : "");
   d.textContent = s.detecting ? "wand in view" : "no wand";

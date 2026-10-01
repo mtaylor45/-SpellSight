@@ -557,3 +557,16 @@ for _ in range(20):
     fixtr.detect(bright)
 assert fixtr.working_threshold == fixtr.cfg.threshold, "fixed mode drifted"
 print(f"adaptive clamps ok (floor {adcfg.threshold_floor}, ceiling 254; fixed unmoved)")
+
+# --- console access control config (plan G14, spec R3.3)
+acl = cfgmod.load("config.yaml")
+assert acl.server.auth_token == "" and acl.server.stream_mode == "always"
+assert validate(acl) == []
+acl.server.stream_mode = "sideways"
+assert any("stream_mode" in p for p in validate(acl)), validate(acl)
+acl.server.stream_mode = "off"
+acl.server.auth_token = "short"
+assert any("at least 8" in p for p in validate(acl)), validate(acl)
+acl.server.auth_token = "a-long-enough-token"
+assert validate(acl) == [], validate(acl)
+print("access control config ok (modes validated, weak token refused)")

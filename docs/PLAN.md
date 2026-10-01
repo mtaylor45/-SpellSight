@@ -128,7 +128,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** A simulated ambient step from 40 to 180 tracks within 3 recalculation intervals. `fixed` reproduces day-1 behaviour exactly and the suites pass unmodified. Real constants deferred to the tuning session.
 **Depends on.** day 4
 
-### Day 9 — Console access control `[ ]`
+### Day 9 — Console access control `[~]` — [PR #13](https://github.com/mtaylor45/-SpellSight/pull/13)
 **Goal.** Take the living-room camera off the open LAN.
 **Closes.** G14 · **Implements.** R3.3
 **Changes.** `auth_token` accepted via `Authorization: Bearer` or `?t=` (an `<img src>` cannot set headers). `stream_mode: always | on_demand | off`. A loud startup warning when the token is empty and bind is not loopback. Console prompts once and keeps the token in `localStorage`.

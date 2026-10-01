@@ -44,6 +44,16 @@ def main(argv: list[str] | None = None) -> int:
             logging.error("  - %s", problem)
         return 2
 
+    if cfg.server.enabled and not cfg.server.auth_token:
+        loopback = cfg.server.host in ("127.0.0.1", "localhost", "::1")
+        if not loopback:
+            logging.warning(
+                "The console is unauthenticated on %s:%s — anyone on this network can "
+                "watch the camera and retrain spells. Set server.auth_token in %s, or "
+                "bind to 127.0.0.1.",
+                cfg.server.host, cfg.server.port, cfg.config_path,
+            )
+
     engine = Engine(cfg)
 
     stopping = False

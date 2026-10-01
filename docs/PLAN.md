@@ -156,7 +156,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** Runs unchanged outside systemd. `kill -9` mid-training loses at most the in-flight sample and always leaves valid JSON. The unit no longer restart-loops with the watchdog enabled.
 **Depends on.** day 3
 
-### Day 13 — Feedback scaffolding `[ ]` **HW** (verification only)
+### Day 13 — Feedback scaffolding `[~]` — [PR #17](https://github.com/mtaylor45/-SpellSight/pull/17) **HW** (verification only)
 **Goal.** Everything in R3.1 that does not need an LED soldered on.
 **Implements.** R3.1 (partial)
 **Changes.** `feedback.py` with `none` backends as the working default, lazy hardware imports, a backend that raises being disabled after its first failure, an animation thread that cannot block capture, quiet hours honoured across midnight, and `color` on `Spell` with canon-appropriate values.

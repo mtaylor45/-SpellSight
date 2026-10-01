@@ -33,6 +33,9 @@ class MqttBridge:
         self.t_last = f"{base}/last_spell"
         self.t_attrs = f"{base}/last_spell/attributes"
         self.t_event = f"{base}/event"
+        # New topic under wand/, which SPEC.md section 4 explicitly allows.
+        # Nothing frozen is repurposed.
+        self.t_health = f"{base}/health"
         self.t_spell = lambda sid: f"{base}/spell/{sid}/state"
 
     # -- lifecycle ---------------------------------------------------------
@@ -131,6 +134,24 @@ class MqttBridge:
             )
 
         self._client.publish(
+            f"{prefix}/sensor/{node}/optical_headroom/config",
+            json.dumps({
+                "name": "Optical headroom",
+                "unique_id": f"{node}_optical_headroom",
+                "object_id": "wand_optical_headroom",
+                "state_topic": self.t_health,
+                "value_template": "{{ value_json.headroom }}",
+                "json_attributes_topic": self.t_health,
+                "availability_topic": self.t_status,
+                "unit_of_measurement": "levels",
+                "state_class": "measurement",
+                "entity_category": "diagnostic",
+                "icon": "mdi:brightness-6",
+                "device": device,
+            }),
+            retain=True,
+        )
+        self._client.publish(
             f"{prefix}/sensor/{node}/last_spell/config",
             json.dumps({
                 "name": "Last spell",
@@ -146,6 +167,18 @@ class MqttBridge:
         )
         log.info("Published discovery for %d spells", len(self.spells))
 
+    def publish_health(self, health: dict) -> bool:
+        """Publish the optical health snapshot. Retained, so a restart keeps it.
+
+        Retained on purpose: this is what Home Assistant alerts on, and an
+        unretained value would read as unknown every time the device restarts —
+        which is exactly when somebody is looking at it.
+        """
+        if not self._client or not self.connected:
+            return False
+        self._client.publish(self.t_health, json.dumps(health), retain=True)
+        return True
+
     def remove_discovery(self) -> None:
         """Clear retained discovery configs (use when renaming or pruning spells)."""
         if not self._client:
@@ -155,6 +188,7 @@ class MqttBridge:
         for spell in self.spells:
             self._client.publish(f"{prefix}/binary_sensor/{node}/{spell.id}/config", "", retain=True)
         self._client.publish(f"{prefix}/sensor/{node}/last_spell/config", "", retain=True)
+        self._client.publish(f"{prefix}/sensor/{node}/optical_headroom/config", "", retain=True)
 
     # -- casting -----------------------------------------------------------
 

@@ -56,6 +56,8 @@ class Engine:
         # than on the capture loop, so a slow SD card costs no frames.
         self._training: queue.Queue = queue.Queue()
         self._training_thread: threading.Thread | None = None
+        self._health_thread: threading.Thread | None = None
+        self._started_at = time.time()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -66,6 +68,10 @@ class Engine:
             target=self._training_loop, name="training", daemon=True
         )
         self._training_thread.start()
+        self._health_thread = threading.Thread(
+            target=self._health_loop, name="health", daemon=True
+        )
+        self._health_thread.start()
         self._thread = threading.Thread(target=self._loop, name="engine", daemon=True)
         self._thread.start()
 
@@ -76,6 +82,8 @@ class Engine:
             self._thread.join(timeout=3.0)
         if self._training_thread:
             self._training_thread.join(timeout=3.0)
+        if self._health_thread:
+            self._health_thread.join(timeout=3.0)
         self.mqtt.stop()
         self.camera.stop()
 
@@ -134,6 +142,42 @@ class Engine:
     def _record(self, entry: dict) -> None:
         self.last_result = entry
         self.history.appendleft(entry)
+
+    def health(self) -> dict:
+        """The optical health snapshot behind wand/health and R2.3.
+
+        Headroom is the number SPEC.md section 11 says the hardware session is
+        there to measure: how far the cutoff sits above the room.
+        """
+        cam = self.camera.health() if hasattr(self.camera, "health") else {}
+        ambient = self.tracker.ambient.value
+        return {
+            "ambient": round(ambient, 1) if ambient is not None else None,
+            "threshold": self.tracker.working_threshold,
+            "headroom": self.tracker.headroom,
+            "fps": round(float(cam.get("fps") or 0.0), 1),
+            "blobs_rejected_oversize": self.tracker.blobs_rejected_oversize,
+            "camera_reopens": int(cam.get("reopens") or 0),
+            "camera_opened": bool(cam.get("opened")),
+            "uptime_s": int(time.time() - self._started_at),
+        }
+
+    def _health_loop(self) -> None:
+        """Publish health on its own thread, rate limited.
+
+        Its own thread because the capture loop must never wait on a socket, and
+        rate limited because this is a retained topic — republishing it at frame
+        rate would hammer the broker for a number that moves slowly.
+        """
+        # Honoured exactly as configured. Clamping it here would mean the device
+        # quietly doing something other than what config.yaml says, which is the
+        # failure this telemetry exists to expose. validate() enforces > 0.
+        interval = float(self.cfg.mqtt.health_interval)
+        while not self._stop.wait(interval):
+            try:
+                self.mqtt.publish_health(self.health())
+            except Exception:                    # a broker hiccup is not fatal
+                log.exception("Health publish failed")
 
     def _handle_gesture(self, gesture) -> None:
         self.last_trace = gesture.points
@@ -234,6 +278,7 @@ class Engine:
             "training_spell": self.training_spell,
             "camera_fps": self.camera.fps,          # kept: existing console key
             "camera": self.camera.health(),
+            "health": self.health(),       # same snapshot wand/health publishes
             "tracker_state": self.tracker.state.value,
             "detecting": self.tracker.detection is not None,
             "mqtt_connected": self.mqtt.connected,

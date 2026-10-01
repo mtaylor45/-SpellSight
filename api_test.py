@@ -60,6 +60,9 @@ for key in ("threshold_mode", "working_threshold", "ambient", "headroom"):
     assert key in s["tracker"], f"status is missing tracker.{key}"
 assert s["tracker"]["threshold_mode"] == "fixed", s["tracker"]["threshold_mode"]
 assert s["tracker"]["working_threshold"] == s["tracker"]["threshold"], s["tracker"]
+# The same snapshot wand/health publishes (spec R2.3).
+assert set(s["health"]) >= {"ambient", "threshold", "headroom", "fps",
+                            "blobs_rejected_oversize", "camera_reopens", "uptime_s"}, sorted(s["health"])
 
 r = c.post("/api/mode", json={"mode":"train","spell_id":"lumos"})
 assert r.status_code == 200, r.text

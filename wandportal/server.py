@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from . import config as config_module
 from .engine import Engine
+from .tracker import clean_band, sweep_thresholds
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -137,6 +139,32 @@ def create_app(engine: Engine) -> FastAPI:
             "shadowed_by_env": shadowed,
             "note": ("These keys are overridden by environment variables and will not "
                      "take effect on restart: " + ", ".join(shadowed)) if shadowed else "",
+        }
+
+    @app.get("/api/tune/sweep")
+    def tune_sweep(lo: int = 60, hi: int = 250, step: int = 5):
+        """Blob counts across a range of cutoffs, on the newest frame.
+
+        Deliberately a sync def: FastAPI runs it in a threadpool, so the ~40
+        thresholding passes neither block the event loop nor the capture thread,
+        which reads from the camera independently.
+        """
+        if not 1 <= lo < hi <= 254:
+            raise HTTPException(422, f"need 1 <= lo < hi <= 254, got lo={lo} hi={hi}")
+        if not 1 <= step <= 64:
+            raise HTTPException(422, f"step {step} must be in 1..64")
+        _, frame = engine.camera.read()
+        if frame is None:
+            raise HTTPException(503, "no frame yet — the camera has not delivered one")
+        t = engine.cfg.tracker
+        started = time.perf_counter()
+        rows = sweep_thresholds(frame, lo=lo, hi=hi, step=step,
+                                min_area=t.min_area, max_area=t.max_area, blur=t.blur)
+        return {
+            "sweep": rows,
+            "band": clean_band(rows),
+            "current": t.threshold,
+            "took_ms": round((time.perf_counter() - started) * 1000, 1),
         }
 
     @app.get("/api/samples/{spell_id}")

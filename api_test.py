@@ -163,6 +163,10 @@ assert r.status_code == 404 and "thumbnails" in r.text, r.text[:200]
 assert c.get("/api/samples/lumos").status_code == 200   # training still works
 assert c.post("/api/mode", json={"mode":"tune"}).status_code == 200
 eng.cfg.server.stream_mode = "always"
+# The framing readout reaches the API (spec R4.2).
+fr = c.get("/api/status").json()["framing"]
+assert set(fr) >= {"in_frame", "in_zone", "at", "distance_hint"}, sorted(fr)
+
 print("access control ok (401 without token, both auth routes, stream off = 404)")
 
 print(f"sweep endpoint ok ({len(sw['sweep'])} steps in {sw['took_ms']}ms, band {sw['band']['lo']}-{sw['band']['hi']})")

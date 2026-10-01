@@ -623,3 +623,57 @@ assert "white_balance_temperature_auto" not in got, "a control the driver lacks 
 assert fake.health()["controls"] == got
 print(f"exposure lock ok (no v4l2-ctl degrades silently; {len(got)} applied, "
       f"{len(fake.v4l2_failed)} failed and named)")
+
+# --- framing aid (spec R4.2)
+# docs/HARDWARE.md: a concealed camera cannot be aimed by eye. The readout has
+# to track a wand entering and leaving the casting zone.
+fr_cfg = cfgmod.load("config.yaml")
+fr_cfg.mqtt.enabled = False
+# Moving the wand ends a gesture, and the tracker then sits in cooldown with no
+# detection. Shorten it so the test measures framing rather than the cooldown.
+fr_cfg.tracker.cooldown = 0.05
+fr_cfg.recognizer.templates_path = tempfile.mktemp(suffix=".json")
+fr_eng = Engine(fr_cfg)
+
+class PlacedCam:
+    """A camera whose wand sits wherever the test puts it."""
+    fps = 30.0
+    def __init__(self): self.i = 0; self.pos = None
+    def start(self): return self
+    def stop(self): pass
+    def health(self): return {"opened": True, "fps": 30.0, "reopens": 0,
+                              "last_error": None, "source": "stub"}
+    def read(self):
+        self.i += 1
+        f = np.zeros((480, 640), np.uint8)
+        if self.pos:
+            cv2.circle(f, self.pos, 4, 255, -1)
+        return self.i, f
+
+placed = PlacedCam(); fr_eng.camera = placed
+fr_eng.mqtt = CountingBridge()
+fr_eng.start()
+
+def framing_after(pos):
+    placed.pos = pos
+    time.sleep(0.25)
+    return fr_eng.framing()
+
+out_of_frame = framing_after(None)
+assert out_of_frame["in_frame"] is False and out_of_frame["in_zone"] is False, out_of_frame
+
+centre = framing_after((320, 240))          # middle of the frame: inside 0.15..0.85
+assert centre["in_frame"] and centre["in_zone"], centre
+assert centre["distance_hint"] in ("good", "too close"), centre
+
+edge = framing_after((40, 240))             # 6% across: outside the zone
+assert edge["in_frame"] and not edge["in_zone"], edge
+assert 0.0 <= edge["at"][0] < 0.15, edge
+
+fr_eng.stop()
+print(f"framing aid ok (out of frame -> in zone -> outside zone; hint {centre['distance_hint']!r})")
+
+# The zone is validated like everything else.
+bad_zone = cfgmod.load("config.yaml")
+bad_zone.framing.x0, bad_zone.framing.x1 = 0.9, 0.2
+assert any("framing zone" in p for p in validate(bad_zone)), validate(bad_zone)

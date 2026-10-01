@@ -63,6 +63,22 @@ class TrackerConfig:
 
 
 @dataclass
+class FramingConfig:
+    """The casting zone, as fractions of the frame.
+
+    A concealed camera cannot be aimed by eye (docs/HARDWARE.md), so the console
+    draws this box and says whether the wand is inside it. Aim it before the
+    panel goes on, and mark the position.
+    """
+
+    show_zone: bool = True
+    x0: float = 0.15
+    y0: float = 0.15
+    x1: float = 0.85
+    y1: float = 0.85
+
+
+@dataclass
 class RecognizerConfig:
     resample_points: int = 64
     rotation_invariant: bool = False
@@ -111,6 +127,7 @@ class Config:
     recognizer: RecognizerConfig = field(default_factory=RecognizerConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    framing: FramingConfig = field(default_factory=FramingConfig)
     spells: list[str] = field(default_factory=lambda: [
         "lumos", "nox", "alohomora", "colloportus",
         "incendio", "accio", "silencio", "revelio",
@@ -313,6 +330,12 @@ def validate(cfg: Config) -> list[str]:
             f"server.auth_token is only {len(cfg.server.auth_token)} characters; "
             "use at least 8, or leave it empty to disable auth"
         )
+    f = cfg.framing
+    if not (0.0 <= f.x0 < f.x1 <= 1.0 and 0.0 <= f.y0 < f.y1 <= 1.0):
+        problems.append(
+            f"framing zone ({f.x0}, {f.y0})-({f.x1}, {f.y1}) must be fractions "
+            "with x0 < x1 and y0 < y1 inside 0..1"
+        )
     if not 1 <= cfg.server.port <= 65535:
         problems.append(f"server.port {cfg.server.port} is outside 1..65535")
     if not 1 <= cfg.mqtt.port <= 65535:
@@ -343,7 +366,7 @@ def load(path: str | None = None) -> Config:
             else:
                 setattr(cfg, key, value)
 
-    for name in ("camera", "tracker", "recognizer", "mqtt", "server"):
+    for name in ("camera", "tracker", "recognizer", "mqtt", "server", "framing"):
         _apply_env(name, getattr(cfg, name))
 
     if os.environ.get("WAND_SPELLS"):

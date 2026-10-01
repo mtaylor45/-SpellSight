@@ -27,6 +27,7 @@ MODE_TUNE = "tune"
 TRAIL_COLOR = (86, 186, 255)     # BGR amber
 HIT_COLOR = (120, 255, 160)
 MISS_COLOR = (90, 90, 235)
+ZONE_COLOR = (120, 120, 120)     # the casting zone outline (spec R4.2)
 
 
 class Engine:
@@ -154,6 +155,41 @@ class Engine:
         self.last_result = entry
         self.history.appendleft(entry)
 
+    def framing(self) -> dict:
+        """Where the wand is relative to the casting zone, for aiming.
+
+        Area stands in for distance: a retroreflector fills more pixels up close.
+        It is a hint rather than a measurement — the mapping needs a real lens
+        and a tape measure — but it is enough to tell someone holding a wand at
+        3m whether to move the prop up, down or along.
+        """
+        f = self.cfg.framing
+        frame = self._frame
+        detection = self.tracker.detection
+        if frame is None or detection is None:
+            return {"in_frame": False, "in_zone": False, "at": None, "distance_hint": None}
+        h, w = frame.shape[:2]
+        fx, fy = detection[0] / max(1, w), detection[1] / max(1, h)
+        area = 0.0
+        if self.tracker.mask is not None:
+            area = float((self.tracker.mask > 0).sum())
+        lo, hi = self.cfg.tracker.min_area, self.cfg.tracker.max_area
+        if area <= 0:
+            hint = None
+        elif area >= hi * 0.75:
+            hint = "too close"
+        elif area <= max(lo * 3.0, 4.0):
+            hint = "too far, or the illuminators are weak"
+        else:
+            hint = "good"
+        return {
+            "in_frame": True,
+            "in_zone": f.x0 <= fx <= f.x1 and f.y0 <= fy <= f.y1,
+            "at": [round(fx, 3), round(fy, 3)],
+            "distance_hint": hint,
+            "blob_px": round(area, 1),
+        }
+
     def health(self) -> dict:
         """The optical health snapshot behind wand/health and R2.3.
 
@@ -240,6 +276,12 @@ class Engine:
             color = HIT_COLOR if (self.last_result or {}).get("kind") in ("cast", "sample") else MISS_COLOR
             cv2.polylines(out, [arr], False, color, 3, cv2.LINE_AA)
 
+        f = self.cfg.framing
+        if f.show_zone:
+            h, w = out.shape[:2]
+            cv2.rectangle(out, (int(f.x0 * w), int(f.y0 * h)),
+                          (int(f.x1 * w), int(f.y1 * h)), ZONE_COLOR, 1, cv2.LINE_AA)
+
         d = self.tracker.detection
         if d is not None:
             cv2.circle(out, (int(d[0]), int(d[1])), 9, (255, 255, 255), 2, cv2.LINE_AA)
@@ -290,6 +332,7 @@ class Engine:
             "camera_fps": self.camera.fps,          # kept: existing console key
             "camera": self.camera.health(),
             "health": self.health(),       # same snapshot wand/health publishes
+            "framing": self.framing(),
             "tracker_state": self.tracker.state.value,
             "detecting": self.tracker.detection is not None,
             "mqtt_connected": self.mqtt.connected,

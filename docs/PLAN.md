@@ -142,7 +142,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** Applied controls are logged at INFO; a control that fails logs a WARNING naming it and does not raise. Absent `v4l2-ctl` logs once at INFO and continues — which is this dev environment, so it is testable today. Values marked TODO until the camera is chosen.
 **Depends on.** day 2
 
-### Day 11 — Framing aid `[ ]`
+### Day 11 — Framing aid `[~]` — [PR #15](https://github.com/mtaylor45/-SpellSight/pull/15)
 **Goal.** Make a concealed camera aimable by one person with a phone.
 **Implements.** R4.2
 **Changes.** Console overlay marking the casting zone, plus a live "wand in frame" readout and a distance-plausibility hint from blob area.

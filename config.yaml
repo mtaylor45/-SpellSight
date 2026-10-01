@@ -74,6 +74,16 @@ mqtt:
                            # exactly, so a very small value will hammer the broker
   retain_last_spell: true
 
+# The casting zone, as fractions of the frame. A concealed camera cannot be
+# aimed by eye — the console draws this box and tells you whether the wand is
+# inside it. Aim before the panel goes on, and mark the position.
+framing:
+  show_zone: true
+  x0: 0.15
+  y0: 0.15
+  x1: 0.85
+  y1: 0.85
+
 server:
   enabled: true
   host: 0.0.0.0

@@ -121,7 +121,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** On a synthetic frame with one bright dot and one large bright patch, the sweep identifies the band where exactly one blob survives. Runs off the capture loop and never blocks it.
 **Depends on.** days 4, 6
 
-### Day 8 — Adaptive threshold `[ ]` **HW** (constants only)
+### Day 8 — Adaptive threshold `[~]` — [PR #12](https://github.com/mtaylor45/-SpellSight/pull/12) **HW** (constants only)
 **Goal.** Finish R2.2 with the policy switched off until measured.
 **Implements.** R2.2
 **Changes.** Enables `threshold_mode: adaptive`, which day 4 deliberately refuses at startup rather than letting it silently behave as fixed. `adaptive` mode: `clamp(ambient + margin, floor, 254)`. `fixed` stays the default. Config gains `threshold_floor`, `threshold_margin`, `ambient_percentile`, `ambient_interval` with SPEC's starting values.

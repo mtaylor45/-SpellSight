@@ -24,6 +24,10 @@ tracker:
   ambient_percentile: 99.0   # scene brightness percentile, wand excluded
   ambient_interval: 15       # frames between ambient recalculations
   ambient_width: 160         # frame is downscaled to this width first
+  # Used only by threshold_mode: adaptive. SPEC.md's starting values — they are
+  # guesses until measured against real optics in the actual room.
+  threshold_floor: 200       # adaptive never drops below this
+  threshold_margin: 25       # how far above ambient the wand must sit
   blur: 3
   min_area: 2
   max_area: 500

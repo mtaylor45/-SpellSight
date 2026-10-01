@@ -570,3 +570,56 @@ assert any("at least 8" in p for p in validate(acl)), validate(acl)
 acl.server.auth_token = "a-long-enough-token"
 assert validate(acl) == [], validate(acl)
 print("access control config ok (modes validated, weak token refused)")
+
+# --- exposure lock (spec R2.1, code path only until a camera is chosen)
+# Auto-exposure hunting is the single most common cause of "it worked
+# yesterday". This environment has no v4l2-ctl, which is exactly the
+# degrade-cleanly path the acceptance criterion asks about.
+import logging as _logging
+vcfg = cfgmod.load("config.yaml").camera
+vcam = Camera(vcfg)
+
+assert vcam.device_path() == "/dev/video0", vcam.device_path()
+vcfg2 = cfgmod.load("config.yaml").camera; vcfg2.source = "/dev/video2"
+assert Camera(vcfg2).device_path() == "/dev/video2"
+vcfg3 = cfgmod.load("config.yaml").camera; vcfg3.source = "rtsp://somewhere/stream"
+assert Camera(vcfg3).device_path() is None, "a network source is not a v4l2 device"
+
+# No v4l2-ctl: one INFO line, no exception, nothing claimed as applied.
+applied = vcam.apply_v4l2_controls()
+assert applied == {}, applied
+assert vcam.v4l2_failed == {}, vcam.v4l2_failed
+assert vcam.apply_v4l2_controls() == {}        # and it does not warn twice
+
+# lock_exposure: false skips the whole thing.
+vcfg4 = cfgmod.load("config.yaml").camera; vcfg4.lock_exposure = False
+assert Camera(vcfg4).apply_v4l2_controls() == {}
+
+# A control that fails is named and counted, and never raises.
+class FakeV4l2(Camera):
+    def _v4l2(self, args):
+        if args == ["--version"]:
+            return True, "v4l2-ctl 1.22.1"
+        if "--list-ctrls" in args:
+            return True, ("exposure_auto 0x1 (menu)\n"
+                          "exposure_absolute 0x2 (int)\n"
+                          "gain 0x3 (int)")
+        for a in args:
+            if a.startswith("--set-ctrl=gain"):
+                return False, "VIDIOC_S_CTRL: failed: Permission denied"
+            if a.startswith("--set-ctrl="):
+                return True, ""
+            if a.startswith("--get-ctrl="):
+                control = a.split("=", 1)[1]
+                return True, f"{control}: {50 if 'exposure_absolute' in control else 1}"
+        return True, ""
+
+fake = FakeV4l2(cfgmod.load("config.yaml").camera)
+got = fake.apply_v4l2_controls()
+assert "exposure_auto" in got and "exposure_absolute" in got, got
+assert got["exposure_absolute"] == "50", got
+assert "gain" in fake.v4l2_failed and "Permission denied" in fake.v4l2_failed["gain"], fake.v4l2_failed
+assert "white_balance_temperature_auto" not in got, "a control the driver lacks was invented"
+assert fake.health()["controls"] == got
+print(f"exposure lock ok (no v4l2-ctl degrades silently; {len(got)} applied, "
+      f"{len(fake.v4l2_failed)} failed and named)")

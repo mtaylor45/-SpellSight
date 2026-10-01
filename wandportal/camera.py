@@ -7,6 +7,7 @@ gesture tracking never falls behind the wand.
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 import time
 
@@ -32,6 +33,9 @@ class Camera:
         self.opened = False
         self.reopens = 0
         self.last_error: str | None = None
+        self.v4l2_applied: dict = {}
+        self.v4l2_failed: dict = {}
+        self._v4l2_warned = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -78,6 +82,9 @@ class Camera:
         self._cap = cap
         self.opened = True
         self.last_error = None
+        # Applied on every open, not just the first: a USB re-enumeration resets
+        # every control to its default, which looks exactly like slow drift.
+        self.apply_v4l2_controls()
         log.info(
             "Camera open: %sx%s @ %s fps",
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -166,6 +173,109 @@ class Camera:
                 self._seq += 1
                 self._fps = smoothed
 
+    # -- exposure lock (spec R2.1) ----------------------------------------
+
+    def device_path(self) -> str | None:
+        """The /dev node for this source, or None if it is not a local device."""
+        src = self.cfg.source
+        if isinstance(src, int) or (isinstance(src, str) and src.isdigit()):
+            return f"/dev/video{int(src)}"
+        if isinstance(src, str) and src.startswith("/dev/"):
+            return src
+        return None
+
+    def _v4l2(self, args: list[str]) -> tuple[bool, str]:
+        try:
+            done = subprocess.run(["v4l2-ctl", *args], capture_output=True,
+                                  text=True, timeout=5)
+        except FileNotFoundError:
+            return False, "v4l2-ctl not installed"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, str(exc)
+        if done.returncode != 0:
+            return False, (done.stderr or done.stdout).strip().splitlines()[:1] and \
+                          (done.stderr or done.stdout).strip().splitlines()[0] or "failed"
+        return True, done.stdout.strip()
+
+    def _resolve_names(self, device: str) -> dict[str, str]:
+        """Map our control names onto whatever this driver actually calls them.
+
+        UVC renamed exposure_auto to auto_exposure and exposure_absolute to
+        exposure_time_absolute in newer kernels. Guessing wrong means silently
+        not locking exposure, which is the failure this whole control exists to
+        prevent, so ask the driver instead.
+        """
+        ok, listing = self._v4l2(["-d", device, "--list-ctrls"])
+        available = set()
+        if ok:
+            for line in listing.splitlines():
+                name = line.strip().split(" ", 1)[0]
+                if name:
+                    available.add(name)
+        def pick(*names):
+            for name in names:
+                if name in available:
+                    return name
+            return names[0] if not available else ""
+        return {
+            "auto_exposure": pick("exposure_auto", "auto_exposure"),
+            "exposure": pick("exposure_absolute", "exposure_time_absolute"),
+            "gain": pick("gain"),
+            "awb": pick("white_balance_temperature_auto", "white_balance_automatic"),
+        }
+
+    def apply_v4l2_controls(self) -> dict:
+        """Lock exposure, gain and white balance, and read the values back.
+
+        Never raises: a control this driver does not have is a warning naming it,
+        and no v4l2-ctl at all (a dev laptop, macOS, this test environment) is one
+        INFO line. Neither is a reason to stop recognizing spells.
+        """
+        self.v4l2_applied, self.v4l2_failed = {}, {}
+        if not self.cfg.lock_exposure:
+            return self.v4l2_applied
+        device = self.device_path()
+        if device is None:
+            log.info("Camera source %r is not a local device; skipping v4l2 controls",
+                     self.cfg.source)
+            return self.v4l2_applied
+        if not self._v4l2(["--version"])[0]:
+            if not self._v4l2_warned:
+                log.info("v4l2-ctl not available; leaving camera controls at driver defaults")
+                self._v4l2_warned = True
+            return self.v4l2_applied
+
+        names = self._resolve_names(device)
+        wanted: list[tuple[str, object]] = []
+        if names["auto_exposure"]:
+            # 1 = manual on the classic exposure_auto enum, and on auto_exposure.
+            wanted.append((names["auto_exposure"], 1))
+        if names["exposure"]:
+            wanted.append((names["exposure"], self.cfg.exposure_absolute))
+        if names["gain"]:
+            wanted.append((names["gain"], self.cfg.gain))
+        if names["awb"]:
+            wanted.append((names["awb"], 0 if not self.cfg.auto_white_balance else 1))
+        wanted.extend(self.cfg.v4l2_extra.items())
+
+        for control, value in wanted:
+            ok, err = self._v4l2(["-d", device, f"--set-ctrl={control}={value}"])
+            if not ok:
+                log.warning("Camera control %s=%s did not apply: %s", control, value, err)
+                self.v4l2_failed[control] = err
+                continue
+            # Read it back: setting a control is not the same as it having stuck.
+            ok, readback = self._v4l2(["-d", device, f"--get-ctrl={control}"])
+            actual = readback.split(":", 1)[1].strip() if ok and ":" in readback else "?"
+            self.v4l2_applied[control] = actual
+            if ok and actual not in ("?", str(value)):
+                log.warning("Camera control %s set to %s but reads back %s",
+                            control, value, actual)
+        if self.v4l2_applied:
+            log.info("Camera controls locked: %s",
+                     ", ".join(f"{k}={v}" for k, v in sorted(self.v4l2_applied.items())))
+        return self.v4l2_applied
+
     def _orient(self, frame):
         if self.cfg.rotate == 90:
             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -199,6 +309,8 @@ class Camera:
             "reopens": self.reopens,
             "last_error": self.last_error,
             "source": self.cfg.source,
+            "controls": dict(self.v4l2_applied),
+            "controls_failed": dict(self.v4l2_failed),
         }
 
     def read(self):

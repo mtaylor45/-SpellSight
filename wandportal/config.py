@@ -26,6 +26,15 @@ class CameraConfig:
     reopen_delay: float = 2.0            # first retry wait, seconds
     reopen_max_delay: float = 30.0       # backoff ceiling
     reopen_after_failures: int = 60      # consecutive bad reads before reopening
+    # Auto-exposure hunting is the single most common cause of "it worked
+    # yesterday": a white shirt crosses the frame, the camera stops down, the
+    # wand tip dims and the threshold stops matching. Locked via v4l2-ctl,
+    # because OpenCV's property setters are unreliable across UVC drivers.
+    lock_exposure: bool = True
+    exposure_absolute: int = 50          # driver units — TODO: tune per camera
+    gain: int = 20                       # TODO: tune per camera
+    auto_white_balance: bool = False
+    v4l2_extra: dict = field(default_factory=dict)   # raw control=value escape hatch
 
 
 @dataclass
@@ -280,6 +289,12 @@ def validate(cfg: Config) -> list[str]:
     c = cfg.camera
     if c.width <= 0 or c.height <= 0:
         problems.append(f"camera resolution {c.width}x{c.height} is not positive")
+    if c.lock_exposure and c.exposure_absolute < 0:
+        problems.append(f"camera.exposure_absolute {c.exposure_absolute} must be at least 0")
+    if c.lock_exposure and c.gain < 0:
+        problems.append(f"camera.gain {c.gain} must be at least 0")
+    if not isinstance(c.v4l2_extra, dict):
+        problems.append("camera.v4l2_extra must be a mapping of control: value")
     if c.rotate not in (0, 90, 180, 270):
         problems.append(f"camera.rotate {c.rotate} must be one of 0, 90, 180, 270")
     if c.reopen_delay <= 0 or c.reopen_max_delay < c.reopen_delay:

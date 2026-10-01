@@ -435,3 +435,52 @@ assert set(snapshot) >= {"ambient", "threshold", "headroom", "fps",
 assert snapshot["camera_reopens"] == 4, snapshot["camera_reopens"]
 print(f"health rate limit ok ({counter.n} publishes vs {eng.camera.i} frames; "
       f"camera_reopens carried through)")
+
+# --- persisting tuned values (plan G5, spec R3.4)
+# An hour of threshold work is the next thing to happen on this project, and it
+# currently evaporates on restart.
+import shutil
+sdir = tempfile.mkdtemp()
+scfg = os.path.join(sdir, "config.yaml")
+shutil.copy("config.yaml", scfg)
+before_text = open(scfg).read()
+
+res = cfgmod.save_values(scfg, {"tracker": {"threshold": 233, "smoothing": 0.5},
+                                "recognizer": {"min_confidence": 0.88}})
+after_text = open(scfg).read()
+assert before_text.count("#") == after_text.count("#"), "comments were lost on save"
+assert "threshold: 233         # tune this first" in after_text, "inline comment lost"
+assert after_text.index("threshold_mode:") < after_text.index("threshold: 233"), "key order moved"
+reloaded = cfgmod.load(scfg)
+assert reloaded.tracker.threshold == 233 and reloaded.tracker.smoothing == 0.5
+assert reloaded.recognizer.min_confidence == 0.88
+assert cfgmod.validate(reloaded) == [], cfgmod.validate(reloaded)
+print(f"config save ok ({len(res['written'])} values, {after_text.count('#')} comments intact)")
+
+# A key that is not in the file yet gets appended to its own section.
+cfgmod.save_values(scfg, {"recognizer": {"template_backups": 7}})
+assert cfgmod.load(scfg).recognizer.template_backups == 7
+assert cfgmod.validate(cfgmod.load(scfg)) == []
+
+# Env still wins after a restart, and saving says so rather than looking broken.
+os.environ["WAND_TRACKER_THRESHOLD"] = "199"
+assert cfgmod.load(scfg).tracker.threshold == 199, "env override stopped winning"
+assert cfgmod.env_shadowed({"tracker": {"threshold": 233}}) == ["tracker.threshold"]
+del os.environ["WAND_TRACKER_THRESHOLD"]
+assert cfgmod.env_shadowed({"tracker": {"threshold": 233}}) == []
+print("env precedence ok (override still wins, and a shadowed save is named)")
+
+# An unwritable config must raise OSError, which the API turns into a 409.
+# Note chmod is useless for this test: save_values writes a sibling .tmp and
+# renames, which needs directory permission rather than file permission, and
+# this test may well be running as root, which bypasses both. A real `:ro` bind
+# mount — how docker-compose mounts config.yaml — fails at the tmp write with
+# EROFS, so that path is exercised with an unwritable directory instead.
+try:
+    cfgmod.save_values(os.path.join(sdir, "no-such-dir", "config.yaml"),
+                       {"tracker": {"threshold": 240}})
+    unwritable_raised = False
+except OSError:
+    unwritable_raised = True
+assert unwritable_raised, "an unwritable config path did not raise OSError for the 409 path"
+print("unwritable config raises OSError (served as 409)")

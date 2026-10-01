@@ -104,6 +104,7 @@ class BlobTracker:
         self._cooldown_until = 0.0
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.mask = None
+        self.blobs_rejected_oversize = 0
         self.ambient = AmbientEstimator(
             percentile=cfg.ambient_percentile,
             interval=cfg.ambient_interval,
@@ -152,7 +153,13 @@ class BlobTracker:
         best_score = -1.0
         for c in contours:
             area = cv2.contourArea(c)
-            if area < self.cfg.min_area or area > self.cfg.max_area:
+            if area > self.cfg.max_area:
+                # A lamp, a window, a sunlit patch of carpet. Counting these is
+                # how a creeping ambient problem shows up as a number before it
+                # shows up as spells that stop working.
+                self.blobs_rejected_oversize += 1
+                continue
+            if area < self.cfg.min_area:
                 continue
             m = cv2.moments(c)
             if m["m00"] == 0:

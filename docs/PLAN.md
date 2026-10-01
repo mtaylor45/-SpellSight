@@ -100,7 +100,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** With `fixed`, behaviour is identical and both suites pass unmodified. A stationary bright blob does not inflate the ambient estimate. Percentile cost is measured on a downscaled frame and reported in the PR.
 **Depends on.** day 2
 
-### Day 5 — `wand/health` and the headroom sensor `[ ]` **← the measuring instrument**
+### Day 5 — `wand/health` and the headroom sensor `[~]` — [PR #9](https://github.com/mtaylor45/-SpellSight/pull/9) **← the measuring instrument**
 **Goal.** Give the hardware session something to read.
 **Closes.** G2 · **Implements.** R2.3
 **Changes.** Retained `wand/health` at most every 30 s: `ambient`, `threshold`, `headroom`, `fps`, `blobs_rejected_oversize`, `camera_reopens`, `uptime_s`. Discovery-published `sensor.wand_optical_headroom`. Publishing on its own thread.

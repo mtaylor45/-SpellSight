@@ -75,6 +75,7 @@ class MqttConfig:
     node_id: str = "wand"
     device_name: str = "Wand Portal"
     pulse_seconds: float = 3.0
+    health_interval: float = 30.0   # seconds between wand/health publishes
     retain_last_spell: bool = True
 
 
@@ -201,6 +202,8 @@ def validate(cfg: Config) -> list[str]:
         problems.append(f"server.port {cfg.server.port} is outside 1..65535")
     if not 1 <= cfg.mqtt.port <= 65535:
         problems.append(f"mqtt.port {cfg.mqtt.port} is outside 1..65535")
+    if cfg.mqtt.health_interval <= 0:
+        problems.append(f"mqtt.health_interval {cfg.mqtt.health_interval} must be above 0")
     if cfg.mqtt.pulse_seconds <= 0:
         problems.append(f"mqtt.pulse_seconds {cfg.mqtt.pulse_seconds} must be above 0")
 

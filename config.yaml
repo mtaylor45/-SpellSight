@@ -58,6 +58,8 @@ mqtt:
   node_id: wand
   device_name: Wand Portal
   pulse_seconds: 3
+  health_interval: 30      # seconds between wand/health publishes; honoured
+                           # exactly, so a very small value will hammer the broker
   retain_last_spell: true
 
 server:

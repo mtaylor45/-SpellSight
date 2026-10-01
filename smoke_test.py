@@ -345,3 +345,93 @@ acfg.tracker.threshold_mode = "adaptive"
 assert any("not implemented yet" in p for p in validate(acfg)), validate(acfg)
 acfg.tracker.threshold_mode = "sideways"
 assert any("must be 'fixed' or 'adaptive'" in p for p in validate(acfg)), validate(acfg)
+
+# --- wand/health and the headroom sensor (plan G2, spec R2.3)
+# The number SPEC.md section 11 says the hardware session exists to measure.
+hcfg = cfgmod.load("config.yaml").mqtt
+hbridge = MqttBridge(hcfg, resolve(["lumos"]))
+hstub = StubClient(); hbridge._client = hstub; hbridge.connected = True
+
+assert hbridge.t_health == "wand/health", hbridge.t_health
+assert hbridge.publish_health({"ambient": 62, "threshold": 210, "headroom": 148}) is True
+payload, retain = hstub.find("wand/health")
+assert retain is True, "health must be retained — it is what HA alerts on"
+assert json.loads(payload)["headroom"] == 148, payload
+
+hstub.sent.clear()
+hbridge.publish_discovery()
+sensor = json.loads(hstub.find("homeassistant/sensor/wand/optical_headroom/config")[0])
+assert sensor["object_id"] == "wand_optical_headroom", sensor["object_id"]
+assert sensor["state_topic"] == "wand/health", sensor["state_topic"]
+assert sensor["value_template"] == "{{ value_json.headroom }}", sensor["value_template"]
+assert sensor["device"]["identifiers"] == ["wand"], "headroom sensor is on a different device"
+# Nothing frozen moved: the section 4 topics are still exactly where they were.
+for frozen in ("wand/status", "wand/last_spell", "wand/last_spell/attributes", "wand/event"):
+    assert frozen != hbridge.t_health
+hstub.sent.clear()
+hbridge.remove_discovery()
+assert hstub.find("homeassistant/sensor/wand/optical_headroom/config")[0] == "", "sensor not cleared"
+print("wand/health contract ok (new topic, section 4 untouched)")
+
+# Headroom must actually fall when a bright source enters the room.
+dark = np.full((480, 640), 40, np.uint8)
+lit = np.full((480, 640), 185, np.uint8)
+htr = BlobTracker(cfgmod.load("config.yaml").tracker)
+htr.detect(dark);  dark_head = htr.headroom
+htr.ambient._countdown = 0            # force a recalculation on the next frame
+htr.detect(lit);   lit_head = htr.headroom
+assert dark_head > lit_head, f"headroom did not fall when the lamp came on ({dark_head} -> {lit_head})"
+assert lit_head < 50, f"headroom {lit_head} should be small in a bright room"
+print(f"headroom responds ok ({dark_head} dark -> {lit_head} lit)")
+
+# Oversize blobs are counted, not silently dropped.
+lamp = np.full((480, 640), 10, np.uint8)
+cv2.circle(lamp, (120, 120), 60, 255, -1)          # far above max_area
+ltr = BlobTracker(cfgmod.load("config.yaml").tracker)
+ltr.detect(lamp)
+assert ltr.blobs_rejected_oversize >= 1, "an oversize blob was dropped without being counted"
+print(f"oversize blobs counted ok ({ltr.blobs_rejected_oversize})")
+
+# Rate limiting: the health topic is retained and slow-moving, so it must not be
+# republished at frame rate however fast the loop runs.
+from wandportal.engine import Engine
+
+class CountingBridge:
+    def __init__(self): self.n = 0; self.connected = True
+    def start(self): pass
+    def stop(self): pass
+    def publish_health(self, health): self.n += 1; self.last = health; return True
+    def cast(self, *a, **k): pass
+    def publish_discovery(self): pass
+
+class StillCam:
+    fps = 30.0
+    def __init__(self): self.i = 0; self.reopens = 4
+    def start(self): return self
+    def stop(self): pass
+    def read(self):
+        self.i += 1
+        return self.i, np.full((120, 160, 3), 30, np.uint8)
+    def health(self):
+        return {"opened": True, "fps": self.fps, "reopens": self.reopens,
+                "last_error": None, "source": "stub"}
+
+ecfg = cfgmod.load("config.yaml")
+ecfg.mqtt.enabled = False
+ecfg.mqtt.health_interval = 0.1
+ecfg.recognizer.templates_path = tempfile.mktemp(suffix=".json")
+eng = Engine(ecfg)
+eng.camera = StillCam()
+counter = CountingBridge(); eng.mqtt = counter
+eng.start()
+time.sleep(0.75)
+eng.stop()
+# ~7 intervals in 0.75s, against thousands of frames in the same window.
+assert 3 <= counter.n <= 12, f"health published {counter.n} times in 0.75s at a 0.1s interval"
+assert eng.camera.i > 50, f"only {eng.camera.i} frames — the rate test proves nothing"
+snapshot = counter.last
+assert set(snapshot) >= {"ambient", "threshold", "headroom", "fps",
+                         "blobs_rejected_oversize", "camera_reopens", "uptime_s"}, sorted(snapshot)
+assert snapshot["camera_reopens"] == 4, snapshot["camera_reopens"]
+print(f"health rate limit ok ({counter.n} publishes vs {eng.camera.i} frames; "
+      f"camera_reopens carried through)")

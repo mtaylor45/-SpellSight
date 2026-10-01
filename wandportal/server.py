@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -43,24 +44,62 @@ class TuneRequest(BaseModel):
 def create_app(engine: Engine) -> FastAPI:
     app = FastAPI(title="Wand Portal", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
+    @app.middleware("http")
+    async def require_token(request: Request, call_next):
+        """Gate the data behind a token, when one is configured.
+
+        The console HTML itself stays open so a browser can load the page and
+        prompt for the token — it carries no camera data. Everything that does,
+        the API and the stream, is gated.
+
+        The query parameter exists because an <img src> cannot set an
+        Authorization header, and the stream has to be loadable by one.
+        """
+        token = engine.cfg.server.auth_token
+        path = request.url.path
+        if token and (path.startswith("/api/") or path == "/stream.mjpg"):
+            header = request.headers.get("authorization", "")
+            supplied = header[7:] if header.lower().startswith("bearer ") else ""
+            supplied = supplied or request.query_params.get("t", "")
+            # Constant time: a timing oracle on a LAN is a real way to recover
+            # a short token.
+            if not supplied or not secrets.compare_digest(supplied, token):
+                return JSONResponse(
+                    {"detail": "missing or invalid token — pass ?t=<token> or "
+                               "an Authorization: Bearer header"},
+                    status_code=401,
+                )
+        return await call_next(request)
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
         return HTMLResponse((WEB_DIR / "index.html").read_text())
 
     @app.get("/stream.mjpg")
     async def stream():
+        mode = engine.cfg.server.stream_mode
+        if mode == "off":
+            raise HTTPException(
+                404,
+                "the video stream is disabled (server.stream_mode: off). Training "
+                "and tuning still work from the trace thumbnails.",
+            )
         interval = 1.0 / max(1, engine.cfg.server.stream_fps)
         quality = engine.cfg.server.stream_quality
 
         async def frames():
-            while True:
-                jpg = engine.jpeg(quality)
-                if jpg:
-                    yield (
-                        b"--frame\r\nContent-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n"
-                    )
-                await asyncio.sleep(interval)
+            engine.viewers += 1
+            try:
+                while True:
+                    jpg = engine.jpeg(quality)
+                    if jpg:
+                        yield (
+                            b"--frame\r\nContent-Type: image/jpeg\r\n"
+                            b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n" + jpg + b"\r\n"
+                        )
+                    await asyncio.sleep(interval)
+            finally:
+                engine.viewers = max(0, engine.viewers - 1)
 
         return StreamingResponse(
             frames(),

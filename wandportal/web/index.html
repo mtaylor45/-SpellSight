@@ -58,6 +58,7 @@
   .sweep i.good{background:var(--confirmed)}
   .sweep i.busy{background:var(--wandlight)}
   .sweep i.none{background:var(--rule)}
+  .feedoff{margin:.6rem 0; color:var(--muted); font-size:.9rem}
   button.link{background:none; border:0; color:var(--confirmed); text-decoration:underline;
               cursor:pointer; font:inherit; padding:0}
 
@@ -146,7 +147,8 @@
 <body>
 
 <figure class="viewer">
-  <img id="feed" src="/stream.mjpg" alt="Live infrared view with the wand trail drawn on it">
+  <img id="feed" alt="Live infrared view with the wand trail drawn on it">
+  <p id="feedOff" class="feedoff" hidden></p>
   <figcaption>
     <span class="pip" id="pipCamera">camera</span>
     <span class="pip" id="pipDetect">no wand</span>
@@ -207,8 +209,34 @@ const DIALS = [
   {k:"min_margin",     label:"Gap over the runner-up", min:0, max:0.3, step:0.005},
 ];
 
+// The token lives in localStorage so the console survives a reload. It is only
+// ever sent to this device; there is nothing else to send it to.
+let token = localStorage.getItem("wandToken") || "";
+
+function authHeaders(base) {
+  return token ? {...base, Authorization: `Bearer ${token}`} : base;
+}
+
+function withToken(url) {
+  // An <img src> cannot set a header, so the stream takes the token as a query
+  // parameter instead.
+  return token ? url + (url.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(token) : url;
+}
+
+async function promptForToken(why) {
+  const entered = window.prompt(why || "This console needs its access token.", "");
+  if (entered === null) return false;
+  token = entered.trim();
+  localStorage.setItem("wandToken", token);
+  return true;
+}
+
 async function api(path, opts) {
-  const res = await fetch(path, {headers:{"Content-Type":"application/json"}, ...opts});
+  const res = await fetch(path, {headers: authHeaders({"Content-Type":"application/json"}), ...opts});
+  if (res.status === 401) {
+    if (await promptForToken("Wrong or missing token for this Wand Portal.")) return api(path, opts);
+    throw new Error("not authorised");
+  }
   if (!res.ok) throw new Error((await res.json().catch(()=>({}))).detail || res.statusText);
   return res.json();
 }
@@ -443,6 +471,19 @@ function renderDials(s) {
 $("mCast").onclick  = () => setMode("run");
 $("mTrain").onclick = () => setMode("train", trainingSpell);
 $("mTune").onclick  = () => setMode("tune");
+function refreshFeed() {
+  const img = $("feed"), note = $("feedOff");
+  // stream_mode: off is a deliberate setting, not a broken image — say so.
+  fetch(withToken("/stream.mjpg"), {method: "HEAD"}).catch(() => {});
+  img.onerror = () => {
+    img.hidden = true; note.hidden = false;
+    note.textContent = "The video stream is off (server.stream_mode). Training and "
+                     + "tuning still work from the trace thumbnails below.";
+  };
+  img.src = withToken("/stream.mjpg");
+}
+refreshFeed();
+
 $("saveCfg").onclick = saveConfig;
 $("sweepBtn").onclick = runSweep;
 $("selfTest").onclick = async () => {

@@ -49,6 +49,8 @@ class Engine:
         self.error: str | None = None
         # Tuning lives in memory until saved; the console needs to say so.
         self.unsaved_tuning = False
+        # Live MJPEG clients, so on_demand can skip work nobody is watching.
+        self.viewers = 0
 
         self._frame = None
         self._lock = threading.Lock()
@@ -110,7 +112,14 @@ class Engine:
             if gesture is not None:
                 self._handle_gesture(gesture)
 
-            annotated = self._annotate(frame)
+            # Annotating costs a copy, a dim, polylines and a putText every
+            # frame. In on_demand mode with nobody watching, that is CPU spent
+            # on an image no one will ever see — which on a Pi inside a sealed
+            # prop is also heat.
+            if self.cfg.server.stream_mode == "on_demand" and self.viewers == 0:
+                annotated = frame
+            else:
+                annotated = self._annotate(frame)
             with self._lock:
                 self._frame = annotated
 

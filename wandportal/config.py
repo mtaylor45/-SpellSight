@@ -87,6 +87,10 @@ class ServerConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8080
+    # Empty disables auth entirely, which is the Phase 1 behaviour and is warned
+    # about loudly at startup when the bind is not loopback.
+    auth_token: str = ""
+    stream_mode: str = "always"   # always | on_demand | off
     stream_fps: int = 15
     stream_quality: int = 70
 
@@ -284,6 +288,16 @@ def validate(cfg: Config) -> list[str]:
             f"camera.reopen_max_delay ({c.reopen_max_delay})"
         )
 
+    if cfg.server.stream_mode not in ("always", "on_demand", "off"):
+        problems.append(
+            f"server.stream_mode {cfg.server.stream_mode!r} must be "
+            "'always', 'on_demand' or 'off'"
+        )
+    if cfg.server.auth_token and len(cfg.server.auth_token) < 8:
+        problems.append(
+            f"server.auth_token is only {len(cfg.server.auth_token)} characters; "
+            "use at least 8, or leave it empty to disable auth"
+        )
     if not 1 <= cfg.server.port <= 65535:
         problems.append(f"server.port {cfg.server.port} is outside 1..65535")
     if not 1 <= cfg.mqtt.port <= 65535:

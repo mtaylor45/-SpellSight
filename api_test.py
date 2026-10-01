@@ -141,6 +141,30 @@ assert set(sw["sweep"][0]) == {"threshold", "blobs", "largest_area", "oversize"}
 assert "band" in sw and "took_ms" in sw and sw["current"] == 236, sw["current"]
 for bad in ("lo=0&hi=250", "lo=200&hi=100", "lo=60&hi=255", "lo=60&hi=250&step=0"):
     assert c.get(f"/api/tune/sweep?{bad}").status_code == 422, bad
+# --- access control (plan G14, spec R3.3)
+# A camera in a living room, reachable by anyone on the LAN, is worth designing out.
+eng.cfg.server.auth_token = "a-long-enough-token"
+for path in ("/api/status", "/api/samples/lumos", "/stream.mjpg"):
+    assert c.get(path).status_code == 401, f"{path} served without a token"
+assert c.post("/api/mode", json={"mode":"run"}).status_code == 401, "POST served without a token"
+assert c.get("/").status_code == 200, "the console HTML should stay loadable to prompt for a token"
+# Both ways in: a header, and a query parameter for <img src>.
+assert c.get("/api/status", headers={"Authorization": "Bearer a-long-enough-token"}).status_code == 200
+assert c.get("/api/status?t=a-long-enough-token").status_code == 200
+assert c.get("/api/status?t=wrong-token").status_code == 401
+assert c.get("/api/status", headers={"Authorization": "Bearer "}).status_code == 401
+eng.cfg.server.auth_token = ""
+assert c.get("/api/status").status_code == 200, "auth stayed on after clearing the token"
+
+# stream_mode: off is a 404 with an explanation, not a broken image.
+eng.cfg.server.stream_mode = "off"
+r = c.get("/stream.mjpg")
+assert r.status_code == 404 and "thumbnails" in r.text, r.text[:200]
+assert c.get("/api/samples/lumos").status_code == 200   # training still works
+assert c.post("/api/mode", json={"mode":"tune"}).status_code == 200
+eng.cfg.server.stream_mode = "always"
+print("access control ok (401 without token, both auth routes, stream off = 404)")
+
 print(f"sweep endpoint ok ({len(sw['sweep'])} steps in {sw['took_ms']}ms, band {sw['band']['lo']}-{sw['band']['hi']})")
 
 assert c.get("/").status_code == 200 and b"Wand Portal" in c.get("/").content

@@ -70,6 +70,10 @@ server:
   enabled: true
   host: 0.0.0.0
   port: 8080
+  # A camera in a living room, on the LAN. Empty means no auth at all, which is
+  # warned about at startup whenever the bind is not loopback.
+  auth_token: ""
+  stream_mode: always      # always | on_demand | off
   stream_fps: 15
   stream_quality: 70
 

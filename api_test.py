@@ -167,6 +167,38 @@ eng.cfg.server.stream_mode = "always"
 fr = c.get("/api/status").json()["framing"]
 assert set(fr) >= {"in_frame", "in_zone", "at", "distance_hint"}, sorted(fr)
 
+# --- diagnostics and portability (plan O2, O3)
+# Export while still trained, so the import below has something real to restore.
+exported = c.get("/api/templates/export").json()
+assert exported["samples"].get("lumos"), "nothing to export"
+
+# Clearing the templates makes the next cast a genuine rejection, which is what
+# the diagnostic ring buffer exists to explain.
+assert c.delete("/api/samples/lumos").status_code == 200
+c.post("/api/mode", json={"mode":"run"})
+eng.camera.i = 0
+time.sleep(1.5)
+rej = c.get("/api/rejections").json()["rejections"]
+assert rej, "a rejected cast left no diagnostic record"
+assert {"reason", "confidence", "runner_up", "points"} <= set(rej[0]), sorted(rej[0])
+assert rej[0]["points"] > 10, rej[0]
+png = c.get("/api/rejections/0.png")
+assert png.status_code == 200 and png.content[:4] == b"\x89PNG", png.status_code
+assert c.get("/api/rejections/99.png").status_code == 404
+print(f"rejection diagnostics ok ({len(rej)} kept, reason {rej[0]['reason'][:30]!r})")
+
+# Import restores what the export captured (the README promises portability).
+r = c.post("/api/templates/import", json=exported)
+assert r.status_code == 200, r.text
+assert r.json()["imported"] == len(exported["samples"]["lumos"]), r.json()
+assert r.json()["counts"].get("lumos") == len(exported["samples"]["lumos"]), r.json()
+# A document normalized differently must be refused, not silently degrade things.
+assert c.post("/api/templates/import", json=dict(exported, resample_points=32)).status_code == 422
+assert c.post("/api/templates/import",
+              json={"samples": {"not_a_spell": [[[0, 0], [1, 1]]]}}).status_code == 422
+assert c.post("/api/templates/import", json={"samples": {}}).status_code == 422
+print(f"templates export/import ok ({r.json()['imported']} traces round-tripped)")
+
 print("access control ok (401 without token, both auth routes, stream off = 404)")
 
 print(f"sweep endpoint ok ({len(sw['sweep'])} steps in {sw['took_ms']}ms, band {sw['band']['lo']}-{sw['band']['hi']})")

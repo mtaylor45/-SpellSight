@@ -795,3 +795,13 @@ assert BY_ID["lumos"].color == "#fff4d6" and BY_ID["nox"].color == "#1b2a6b"
 assert BY_ID["alohomora"].color == "#ffb648", "untouched spells keep the default amber"
 print("feedback scaffolding ok (none is a true no-op, missing hardware degrades, "
       "failing backend disabled once)")
+
+# --- hardware-day checklist completeness (plan day 14)
+# The checklist is only useful if it names every value Phase 2 is waiting on.
+checklist = open("docs/HARDWARE-DAY.md").read()
+for needed in ("exposure_absolute", "gain", "threshold_floor", "threshold_margin",
+               "max_area", "headroom", "ambient", "blobs_rejected_oversize",
+               "09:00", "15:00", "21:00", "acrylic", "940", "--selftest"):
+    assert needed in checklist, f"HARDWARE-DAY.md never mentions {needed!r}"
+assert "30%" in checklist, "the acrylic headroom-cost rule from HARDWARE.md is missing"
+print("hardware-day checklist ok (names every Phase 2 value)")

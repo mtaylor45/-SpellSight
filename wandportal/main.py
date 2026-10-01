@@ -19,6 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-c", "--config", default=None, help="path to config.yaml")
     p.add_argument("--no-server", action="store_true", help="run headless, no web console")
     p.add_argument("--list-spells", action="store_true", help="print the spell catalog and exit")
+    p.add_argument("--selftest", action="store_true",
+                   help="run the leave-one-out separation check and exit")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -45,6 +47,27 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             logging.error("  - %s", problem)
         return 2
+
+    if args.selftest:
+        # Answer "are these spells actually separable?" over SSH, without
+        # opening the console or touching the camera.
+        from .recognizer import Recognizer
+        from .spells import resolve
+        enabled = [s.id for s in resolve(cfg.spells)]
+        report = Recognizer(cfg.recognizer).self_test(enabled=enabled)
+        print(f"samples   {report['samples']}")
+        print(f"correct   {report['correct']}")
+        print(f"accuracy  {report['accuracy']:.1%}" if report["samples"] else "accuracy  n/a")
+        if report["confusions"]:
+            print("confusions:")
+            for spell, against in sorted(report["confusions"].items()):
+                for other, count in sorted(against.items()):
+                    print(f"  {spell} read as {other} x{count}")
+        else:
+            print("confusions: none")
+        # Non-zero when a spell is being misread, so a cron or a deploy check
+        # can act on it rather than needing a human to read the output.
+        return 0 if report["samples"] and not report["confusions"] else 1
 
     if cfg.server.enabled and not cfg.server.auth_token:
         loopback = cfg.server.host in ("127.0.0.1", "localhost", "::1")

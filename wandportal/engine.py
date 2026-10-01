@@ -47,6 +47,10 @@ class Engine:
         self.mode = MODE_RUN
         self.training_spell: str | None = None
         self.history: deque[dict] = deque(maxlen=25)
+        # Why didn't it fire? On a concealed device that question is otherwise
+        # unanswerable. Keeping the trace and the scores rather than raw frames:
+        # the trace is what explains the rejection, and frames are megabytes.
+        self.rejections: deque[dict] = deque(maxlen=12)
         self.last_trace: list[tuple[float, float]] = []
         self.last_result: dict | None = None
         self.error: str | None = None
@@ -274,6 +278,17 @@ class Engine:
             self.feedback.event(CAST, colour=getattr(spell, "color", None), spell_id=spell.id)
         else:
             self.feedback.event(REJECTED)
+            self.rejections.appendleft({
+                "at": time.time(),
+                "points": [[round(x, 1), round(y, 1)] for x, y in gesture.points],
+                "spell_id": match.spell_id,
+                "confidence": round(match.confidence, 3),
+                "runner_up": match.runner_up,
+                "runner_up_confidence": round(match.runner_up_confidence, 3),
+                "reason": match.rejected_reason,
+                "duration": round(gesture.duration, 2),
+                "path_length": round(gesture.path_length, 1),
+            })
         self._record(entry)
 
     # -- rendering ---------------------------------------------------------
@@ -318,6 +333,14 @@ class Engine:
         if frame is None:
             return None
         ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        return buf.tobytes() if ok else None
+
+    def rejection_png(self, index: int) -> bytes | None:
+        """Render the trace behind a rejected cast, so it can be reviewed later."""
+        if index < 0 or index >= len(self.rejections):
+            return None
+        points = [tuple(p) for p in self.rejections[index]["points"]]
+        ok, buf = cv2.imencode(".png", render_trace(points))
         return buf.tobytes() if ok else None
 
     def trace_png(self, spell_id: str, index: int) -> bytes | None:

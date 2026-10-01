@@ -163,7 +163,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** `leds: none, sound: none` gives byte-identical recognition and no new runtime imports. A missing `rpi_ws281x` logs one INFO line and continues. A backend raising on every call is disabled after the first. Brightness and latency claims wait for hardware.
 **Depends on.** day 3
 
-### Day 14 — Diagnostics, portability, and hardware-day readiness `[ ]`
+### Day 14 — Diagnostics, portability, and hardware-day readiness `[~]` — [PR #18](https://github.com/mtaylor45/-SpellSight/pull/18)
 **Goal.** Answer "why didn't it fire?" and be ready for the camera to arrive.
 **Implements.** O2, O3, O4
 **Changes.** Ring buffer of the last N frames plus the trace behind a rejected cast, exposed for review in the console. Templates export/import over HTTP. `--selftest` flag running separation and exiting. A `docs/HARDWARE-DAY.md` checklist: what to measure at 9am/3pm/9pm, with and without the acrylic, and which numbers to write down.
@@ -173,6 +173,9 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 ---
 
 ## After the hardware arrives
+
+**The plan is complete through day 14.** `docs/HARDWARE-DAY.md` is the checklist
+for the session SPEC.md section 11 says everything waits on.
 
 The plan stops here on purpose. SPEC.md §11 is explicit that the ambient
 headroom measurement comes before the rest, and that the enclosure waits on it:

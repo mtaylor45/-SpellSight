@@ -7,12 +7,13 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import config as config_module
 from .engine import Engine
+from .spells import BY_ID
 from .tracker import clean_band, sweep_thresholds
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -229,6 +230,69 @@ def create_app(engine: Engine) -> FastAPI:
     async def clear_spell(spell_id: str):
         engine.recognizer.clear_spell(spell_id)
         return {"ok": True}
+
+    @app.get("/api/rejections")
+    async def rejections():
+        """The last rejected casts, with the scores that rejected them."""
+        return {"rejections": [
+            {k: v for k, v in r.items() if k != "points"} | {"points": len(r["points"])}
+            for r in engine.rejections
+        ]}
+
+    @app.get("/api/rejections/{index}.png")
+    async def rejection_png(index: int):
+        png = engine.rejection_png(index)
+        if png is None:
+            raise HTTPException(404, "no such rejection")
+        return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/templates/export")
+    async def export_templates():
+        """The trained templates, as a plain JSON document.
+
+        The README promises templates are copyable between installs; this is the
+        endpoint that makes that true without reaching into the filesystem.
+        """
+        return {
+            "version": 1,
+            "resample_points": engine.cfg.recognizer.resample_points,
+            "rotation_invariant": engine.cfg.recognizer.rotation_invariant,
+            "samples": {sid: engine.recognizer.points_for(sid)
+                        for sid in engine.recognizer.counts()},
+        }
+
+    @app.post("/api/templates/import")
+    async def import_templates(payload: dict = Body(...), replace: bool = False):
+        """Import templates exported from another install.
+
+        Refuses a document normalized differently: matching 64-point templates
+        against 32-point ones would silently wreck recognition rather than fail.
+        """
+        samples = payload.get("samples")
+        if not isinstance(samples, dict) or not samples:
+            raise HTTPException(422, "payload needs a non-empty 'samples' mapping")
+        theirs = int(payload.get("resample_points", engine.cfg.recognizer.resample_points))
+        if theirs != engine.cfg.recognizer.resample_points:
+            raise HTTPException(
+                422,
+                f"templates were normalized to {theirs} points but this install uses "
+                f"{engine.cfg.recognizer.resample_points}; importing them would quietly "
+                "degrade recognition",
+            )
+        unknown = [sid for sid in samples if sid not in BY_ID]
+        if unknown:
+            raise HTTPException(422, f"unknown spell id(s): {', '.join(sorted(unknown))}")
+
+        imported = 0
+        for sid, traces in samples.items():
+            if replace:
+                engine.recognizer.clear_spell(sid)
+            for trace in traces:
+                points = [(float(p[0]), float(p[1])) for p in trace]
+                if len(points) >= 2:
+                    engine.recognizer.add_sample(sid, points)
+                    imported += 1
+        return {"imported": imported, "counts": engine.recognizer.counts()}
 
     @app.post("/api/self-test")
     async def self_test():

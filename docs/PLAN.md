@@ -149,7 +149,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** The overlay renders in both cast and tune views. The readout tracks a synthetic dot entering and leaving the zone.
 **Depends on.** day 5
 
-### Day 12 — Boot and power resilience `[ ]`
+### Day 12 — Boot and power resilience `[~]` — [PR #16](https://github.com/mtaylor45/-SpellSight/pull/16)
 **Goal.** Earn the watchdog back and prove the templates survive a power cut.
 **Closes.** G10 · **Implements.** R3.2
 **Changes.** `sd_notify` READY and WATCHDOG pings (no dependency — a few lines over a unix socket, no-op when `NOTIFY_SOCKET` is unset). Restore `WatchdogSec` to the unit. Fault-injection test killing the process mid-save.

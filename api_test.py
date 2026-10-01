@@ -132,6 +132,17 @@ finally:
     _cfgmod.save_values = _real_save
 print("config save ok (comments kept, 409 on read-only)")
 
+# The sweep runs against the live frame and refuses nonsense ranges.
+r = c.get("/api/tune/sweep?lo=60&hi=250&step=5")
+assert r.status_code == 200, r.text
+sw = r.json()
+assert len(sw["sweep"]) == 39, len(sw["sweep"])
+assert set(sw["sweep"][0]) == {"threshold", "blobs", "largest_area", "oversize"}, sw["sweep"][0]
+assert "band" in sw and "took_ms" in sw and sw["current"] == 236, sw["current"]
+for bad in ("lo=0&hi=250", "lo=200&hi=100", "lo=60&hi=255", "lo=60&hi=250&step=0"):
+    assert c.get(f"/api/tune/sweep?{bad}").status_code == 422, bad
+print(f"sweep endpoint ok ({len(sw['sweep'])} steps in {sw['took_ms']}ms, band {sw['band']['lo']}-{sw['band']['hi']})")
+
 assert c.get("/").status_code == 200 and b"Wand Portal" in c.get("/").content
 assert c.delete("/api/samples/lumos/0").status_code == 200
 assert c.delete("/api/samples/lumos").status_code == 200

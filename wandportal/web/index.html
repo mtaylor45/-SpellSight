@@ -52,6 +52,14 @@
   .savestate{font-size:.85rem; opacity:.75}
   .savestate.warn{opacity:1; color:var(--wandlight)}
   .savestate.ok{opacity:1; color:var(--confirmed)}
+  .sweep{display:flex; align-items:flex-end; gap:2px; height:64px; margin:0 0 .9rem;
+         padding:.4rem; background:var(--ink); border:1px solid var(--rule); border-radius:4px}
+  .sweep i{flex:1; background:var(--muted); border-radius:1px}
+  .sweep i.good{background:var(--confirmed)}
+  .sweep i.busy{background:var(--wandlight)}
+  .sweep i.none{background:var(--rule)}
+  button.link{background:none; border:0; color:var(--confirmed); text-decoration:underline;
+              cursor:pointer; font:inherit; padding:0}
 
   h1{
     font-family:var(--serif); font-weight:600; font-size:1.35rem;
@@ -161,6 +169,11 @@
     <p class="note">The view above switches to the raw threshold mask. Adjust until the wand tip is the
       only white dot in the frame, then leave tune mode to save the setting into the running config.</p>
     <div id="optics" class="optics">ambient —</div>
+    <div class="saverow">
+      <button id="sweepBtn" type="button">Measure cutoff</button>
+      <span id="sweepState" class="savestate"></span>
+    </div>
+    <div id="sweep" class="sweep" hidden></div>
     <div class="saverow">
       <button id="saveCfg" type="button">Save to config.yaml</button>
       <span id="saveState" class="savestate"></span>
@@ -345,6 +358,37 @@ function renderLog(history) {
   }
 }
 
+function runSweep() {
+  const st = $("sweepState"), host = $("sweep");
+  st.textContent = "measuring…"; st.className = "savestate";
+  fetch("/api/tune/sweep").then(async r => {
+    const b = await r.json();
+    if (!r.ok) throw new Error(b.detail || `sweep failed (${r.status})`);
+    const max = Math.max(1, ...b.sweep.map(x => x.blobs));
+    host.hidden = false;
+    // One bar per cutoff: height is how many candidate blobs survive it. The
+    // band where exactly one survives is the wand on its own — what you want.
+    host.innerHTML = b.sweep.map(x => {
+      const inBand = b.band.lo !== null && x.threshold >= b.band.lo && x.threshold <= b.band.hi;
+      const cls = x.blobs === 0 ? "none" : inBand ? "good" : "busy";
+      return `<i class="${cls}" style="height:${Math.max(6, x.blobs / max * 100)}%"
+                 title="cutoff ${x.threshold}: ${x.blobs} blob(s), ${x.oversize} oversize"></i>`;
+    }).join("");
+    if (b.band.lo === null) {
+      st.textContent = "no cutoff isolates a single blob — check the IR lighting";
+      st.className = "savestate warn";
+    } else {
+      st.innerHTML = `clean band ${b.band.lo}–${b.band.hi} (width ${b.band.width}) ·
+        <button id="useBand" type="button" class="link">use ${b.band.suggested}</button>`;
+      st.className = "savestate ok";
+      $("useBand").onclick = () => api("/api/tune", {method:"POST",
+        body:JSON.stringify({threshold: b.band.suggested})}).then(() => {
+          $("dials").innerHTML = ""; st.textContent = `cutoff set to ${b.band.suggested}`;
+        });
+    }
+  }).catch(e => { st.textContent = e.message; st.className = "savestate warn"; });
+}
+
 function saveConfig() {
   const st = $("saveState");
   st.dataset.sticky = "1";
@@ -400,6 +444,7 @@ $("mCast").onclick  = () => setMode("run");
 $("mTrain").onclick = () => setMode("train", trainingSpell);
 $("mTune").onclick  = () => setMode("tune");
 $("saveCfg").onclick = saveConfig;
+$("sweepBtn").onclick = runSweep;
 $("selfTest").onclick = async () => {
   const r = await api("/api/self-test", {method:"POST"});
   if (!r.samples) { $("selfTestOut").textContent = "Train some spells first."; return; }

@@ -114,7 +114,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** Saving preserves every comment. Env overrides still win after a restart. A read-only config returns 409 with a usable message.
 **Depends on.** day 3
 
-### Day 7 — Threshold sweep assistant `[ ]`
+### Day 7 — Threshold sweep assistant `[~]` — [PR #11](https://github.com/mtaylor45/-SpellSight/pull/11)
 **Goal.** Make choosing a threshold a measurement, not a guess.
 **Implements.** O1
 **Changes.** An endpoint that sweeps the threshold across a range on the current frame and returns blob count and largest blob area per step; console renders it as a curve with the "only the wand is visible" band marked.

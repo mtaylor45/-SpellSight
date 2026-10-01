@@ -257,6 +257,64 @@ class BlobTracker:
         self._cooldown_until = 0.0
 
 
+def sweep_thresholds(frame, lo: int = 60, hi: int = 250, step: int = 5,
+                     min_area: float = 2.0, max_area: float = 500.0,
+                     blur: int = 3) -> list[dict]:
+    """Count candidate blobs at each cutoff across a range.
+
+    Picking a threshold is otherwise "drag the slider and squint": you cannot
+    see how close you are to the edge where a lamp starts counting, or where the
+    wand stops. This turns step 1 of SPEC.md section 11 into a measurement — the
+    band where exactly one blob survives is the band you want, and its width
+    tells you how much margin you have.
+
+    A pure function of a frame so it can run anywhere off the capture loop.
+    """
+    gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    k = blur
+    if k and k >= 3:
+        k = k if k % 2 == 1 else k + 1
+        gray = cv2.GaussianBlur(gray, (k, k), 0)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+    out: list[dict] = []
+    for level in range(int(lo), int(hi) + 1, max(1, int(step))):
+        _, mask = cv2.threshold(gray, level, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        areas = [cv2.contourArea(c) for c in contours]
+        candidates = [a for a in areas if min_area <= a <= max_area]
+        out.append({
+            "threshold": level,
+            "blobs": len(candidates),
+            "largest_area": round(max(areas), 1) if areas else 0.0,
+            "oversize": sum(1 for a in areas if a > max_area),
+        })
+    return out
+
+
+def clean_band(sweep: list[dict]) -> dict:
+    """The widest run of cutoffs where exactly one candidate blob survives."""
+    best_lo = best_hi = None
+    run_lo = None
+    for row in sweep:
+        if row["blobs"] == 1:
+            if run_lo is None:
+                run_lo = row["threshold"]
+            run_hi = row["threshold"]
+            if best_lo is None or (run_hi - run_lo) > (best_hi - best_lo):
+                best_lo, best_hi = run_lo, run_hi
+        else:
+            run_lo = None
+    if best_lo is None:
+        return {"lo": None, "hi": None, "width": 0, "suggested": None}
+    return {
+        "lo": best_lo, "hi": best_hi, "width": best_hi - best_lo,
+        # Sit in the middle of the band, furthest from both edges.
+        "suggested": int(round((best_lo + best_hi) / 2)),
+    }
+
+
 def path_length(points: list[tuple[float, float]]) -> float:
     return float(sum(math.dist(a, b) for a, b in zip(points, points[1:])))
 

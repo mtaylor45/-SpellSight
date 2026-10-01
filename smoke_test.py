@@ -484,3 +484,35 @@ except OSError:
     unwritable_raised = True
 assert unwritable_raised, "an unwritable config path did not raise OSError for the 409 path"
 print("unwritable config raises OSError (served as 409)")
+
+# --- threshold sweep assistant (plan O1)
+# Step 1 of SPEC.md section 11 is "raise the cutoff until the wand tip is the
+# only white dot — no lamps, no window, no reflection off a picture frame".
+# That is a measurement, and this is the instrument for it.
+from wandportal.tracker import sweep_thresholds, clean_band
+
+scene = np.full((480, 640), 25, np.uint8)
+cv2.circle(scene, (500, 120), 40, 210, -1)    # a lamp: oversize, never a candidate
+cv2.circle(scene, (150, 350), 5, 170, -1)     # a picture-frame glint: inside the area window
+cv2.circle(scene, (300, 240), 4, 255, -1)     # the wand tip
+
+t0 = time.perf_counter()
+rows = sweep_thresholds(scene, min_area=2.0, max_area=500.0)
+sweep_ms = (time.perf_counter() - t0) * 1000
+band = clean_band(rows)
+
+assert len(rows) == 39, len(rows)
+low = next(r for r in rows if r["threshold"] == 100)
+high = next(r for r in rows if r["threshold"] == 200)
+assert low["blobs"] == 2, f"the glint should still count at 100: {low}"
+assert high["blobs"] == 1, f"only the wand should survive 200: {high}"
+assert low["oversize"] >= 1, "the lamp was not counted as oversize"
+assert band["lo"] is not None and band["lo"] > 170 - 20, band
+assert band["hi"] >= 240 and band["width"] > 50, band
+assert band["lo"] < band["suggested"] < band["hi"], band
+print(f"threshold sweep ok (band {band['lo']}-{band['hi']}, suggest {band['suggested']}, "
+      f"{len(rows)} steps in {sweep_ms:.0f}ms)")
+
+# A frame where nothing isolates a single blob must say so, not invent a band.
+flat = np.full((480, 640), 25, np.uint8)
+assert clean_band(sweep_thresholds(flat, min_area=2.0, max_area=500.0))["lo"] is None

@@ -105,6 +105,33 @@ assert c.post("/api/cast/lumos").status_code == 200      # mqtt off -> logs a wa
 assert c.post("/api/cast/nosuch").status_code == 404
 print("self-test:", c.post("/api/self-test").json())
 
+# Saving tuned values back to config.yaml, and the read-only mount case.
+r = c.post("/api/tune", json={"threshold": 236})
+assert c.get("/api/status").json()["unsaved_tuning"] is True, "tuning did not mark itself unsaved"
+import shutil as _shutil, tempfile as _tempfile, os as _os
+_saved_cfg = _tempfile.mktemp(suffix=".yaml")
+_shutil.copy("config.yaml", _saved_cfg)
+eng.cfg.config_path = _saved_cfg
+r = c.post("/api/config/save")
+assert r.status_code == 200, r.text
+body = r.json()
+assert "tracker.threshold" in body["written"], body
+assert body["shadowed_by_env"] == [], body
+assert open(_saved_cfg).read().count("#") == open("config.yaml").read().count("#"), "comments lost"
+assert c.get("/api/status").json()["unsaved_tuning"] is False, "still marked unsaved after saving"
+_os.unlink(_saved_cfg)
+
+from wandportal import config as _cfgmod
+_real_save = _cfgmod.save_values
+_cfgmod.save_values = lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "Read-only file system"))
+try:
+    r = c.post("/api/config/save")
+    assert r.status_code == 409, f"read-only config returned {r.status_code}, not 409"
+    assert "read-only" in r.text.lower(), r.text
+finally:
+    _cfgmod.save_values = _real_save
+print("config save ok (comments kept, 409 on read-only)")
+
 assert c.get("/").status_code == 200 and b"Wand Portal" in c.get("/").content
 assert c.delete("/api/samples/lumos/0").status_code == 200
 assert c.delete("/api/samples/lumos").status_code == 200

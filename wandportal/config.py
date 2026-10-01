@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -123,6 +124,91 @@ def _apply_env(section_name: str, section: Any) -> None:
             continue
         current = getattr(section, f.name)
         setattr(section, f.name, _coerce(raw, type(current)))
+
+
+_KEY_RE = re.compile(r"^(?P<indent>\s+)(?P<key>[A-Za-z_][\w]*)\s*:\s*(?P<value>.*?)(?P<comment>\s+#.*)?$")
+_SECTION_RE = re.compile(r"^(?P<name>[A-Za-z_][\w]*)\s*:\s*$")
+
+
+def _format(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value if value and not value[0].isspace() else f'"{value}"'
+    return str(value)
+
+
+def env_shadowed(updates: dict[str, dict[str, Any]]) -> list[str]:
+    """Keys an environment variable will override on the next restart.
+
+    Saving a value that an env var shadows looks like the save silently failed —
+    the file changes, the behaviour does not. Worth naming rather than hiding.
+    """
+    shadowed = []
+    for section, values in updates.items():
+        for key in values:
+            if f"WAND_{section}_{key}".upper() in os.environ:
+                shadowed.append(f"{section}.{key}")
+    return sorted(shadowed)
+
+
+def save_values(path: str | Path, updates: dict[str, dict[str, Any]]) -> dict:
+    """Write values back into a YAML file, preserving comments and key order.
+
+    A targeted line rewrite rather than a round trip through yaml.safe_dump,
+    which would destroy every comment in the file — and this config is mostly
+    comments explaining what each number does, which is the part worth keeping.
+    ruamel.yaml would do this too, but it is not worth a runtime dependency on a
+    Pi for one endpoint.
+    """
+    p = Path(path)
+    lines = p.read_text().splitlines(keepends=True)
+    remaining = {sec: dict(vals) for sec, vals in updates.items()}
+    written: list[str] = []
+    out: list[str] = []
+    section: str | None = None
+    section_end: dict[str, int] = {}
+
+    for line in lines:
+        stripped = line.rstrip("\n")
+        match = _SECTION_RE.match(stripped)
+        if match:
+            section = match.group("name")
+            out.append(line)
+            continue
+        if section and stripped.strip() and not stripped.lstrip().startswith("#"):
+            key_match = _KEY_RE.match(stripped)
+            if key_match and key_match.group("key") in remaining.get(section, {}):
+                key = key_match.group("key")
+                value = remaining[section].pop(key)
+                comment = key_match.group("comment") or ""
+                newline = "\n" if line.endswith("\n") else ""
+                out.append(f"{key_match.group('indent')}{key}: {_format(value)}{comment}{newline}")
+                written.append(f"{section}.{key}")
+                section_end[section] = len(out)
+                continue
+        if section and stripped.strip() and not stripped.startswith(" "):
+            section = None
+        out.append(line)
+        if section:
+            section_end[section] = len(out)
+
+    # Keys absent from the file (relying on a default) get appended to their section.
+    for sec, values in remaining.items():
+        for key, value in values.items():
+            at = section_end.get(sec)
+            if at is None:
+                continue
+            out.insert(at, f"  {key}: {_format(value)}\n")
+            written.append(f"{sec}.{key}")
+            for other in section_end:
+                if section_end[other] >= at:
+                    section_end[other] += 1
+
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text("".join(out))
+    tmp.replace(p)
+    return {"written": sorted(written), "path": str(p)}
 
 
 def validate(cfg: Config) -> list[str]:

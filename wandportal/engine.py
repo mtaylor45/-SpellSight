@@ -47,6 +47,8 @@ class Engine:
         self.last_trace: list[tuple[float, float]] = []
         self.last_result: dict | None = None
         self.error: str | None = None
+        # Tuning lives in memory until saved; the console needs to say so.
+        self.unsaved_tuning = False
 
         self._frame = None
         self._lock = threading.Lock()
@@ -284,6 +286,7 @@ class Engine:
             "mqtt_connected": self.mqtt.connected,
             "mqtt_enabled": self.cfg.mqtt.enabled,
             "error": self.error,
+            "unsaved_tuning": self.unsaved_tuning,
             "tracker": {
                 "threshold": self.cfg.tracker.threshold,
                 "threshold_mode": self.cfg.tracker.threshold_mode,

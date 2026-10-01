@@ -107,7 +107,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** Headroom drops measurably when a bright source enters view (synthetic frame proves the arithmetic). Rate limited to one publish per 30 s regardless of frame rate. `camera_reopens` increments on a simulated reset. A new topic under `wand/` — §4 untouched.
 **Depends on.** days 2, 4
 
-### Day 6 — Persist tuning `[ ]`
+### Day 6 — Persist tuning `[~]` — [PR #10](https://github.com/mtaylor45/-SpellSight/pull/10)
 **Goal.** Stop losing an evening's tuning to a restart — before the tuning starts.
 **Closes.** G5 · **Implements.** R3.4
 **Changes.** `POST /api/config/save` writing tracker and recognizer values back to the YAML **preserving comments and key order** (targeted line rewrite; `ruamel.yaml` only if it earns the dependency under CLAUDE.md). Unsaved-changes indicator in the Tune panel. 409, not 500, on a read-only mount — which is exactly how compose mounts it.

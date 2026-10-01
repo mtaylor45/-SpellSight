@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import config as config_module
 from .engine import Engine
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -98,7 +99,45 @@ def create_app(engine: Engine) -> FastAPI:
             value = getattr(req, name)
             if value is not None:
                 setattr(r, name, value)
+        engine.unsaved_tuning = True
         return engine.status()
+
+    @app.post("/api/config/save")
+    async def save_config():
+        """Write the live tracker and recognizer values back to config.yaml.
+
+        Tuning is otherwise lost on restart, which is a bad surprise after an
+        hour of threshold work — and the hour of threshold work is the next
+        thing to happen on this project.
+        """
+        t, r = engine.cfg.tracker, engine.cfg.recognizer
+        updates = {
+            "tracker": {k: getattr(t, k) for k in (
+                "threshold", "min_area", "max_area", "max_jump", "lost_frames",
+                "min_points", "min_path_length", "max_duration", "cooldown",
+                "smoothing", "blur")},
+            "recognizer": {k: getattr(r, k) for k in ("min_confidence", "min_margin")},
+        }
+        try:
+            result = config_module.save_values(engine.cfg.config_path, updates)
+        except OSError as exc:
+            # compose mounts config.yaml read-only; that is a 409, not a 500.
+            raise HTTPException(
+                409,
+                f"could not write {engine.cfg.config_path}: {exc.strerror or exc}. "
+                "The file is probably mounted read-only (docker-compose mounts it :ro) "
+                "or owned by another user.",
+            )
+        engine.unsaved_tuning = False
+        shadowed = config_module.env_shadowed(updates)
+        return {
+            **result,
+            # Saving a value an env var shadows looks like the save failed: the
+            # file changes, the behaviour does not. Say so rather than hide it.
+            "shadowed_by_env": shadowed,
+            "note": ("These keys are overridden by environment variables and will not "
+                     "take effect on restart: " + ", ".join(shadowed)) if shadowed else "",
+        }
 
     @app.get("/api/samples/{spell_id}")
     async def samples(spell_id: str):

@@ -6,9 +6,11 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 import time
 
 from . import config as config_module
+from . import sdnotify
 from .engine import Engine
 
 
@@ -64,12 +66,19 @@ def main(argv: list[str] | None = None) -> int:
             return
         stopping = True
         logging.info("Shutting down")
+        sdnotify.stopping()
+        watchdog_stop.set()
         engine.stop()
 
     signal.signal(signal.SIGINT, lambda *a: (shutdown(), sys.exit(0)))
     signal.signal(signal.SIGTERM, lambda *a: (shutdown(), sys.exit(0)))
 
     engine.start()
+
+    # Tell systemd we are up, and keep telling it. No-ops outside systemd.
+    watchdog_stop = threading.Event()
+    sdnotify.start_watchdog(watchdog_stop)
+    sdnotify.ready()
     logging.info("Tracking %d spells: %s", len(engine.spells), ", ".join(engine.spell_ids))
 
     if args.no_server or not cfg.server.enabled:

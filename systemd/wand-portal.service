@@ -9,7 +9,9 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-Type=simple
+# notify, not simple: main.py sends sd_notify READY=1 once the engine is up, so
+# systemd knows the difference between "process started" and "watching for spells".
+Type=notify
 User=wand
 SupplementaryGroups=video gpio audio
 WorkingDirectory=/opt/wand-portal
@@ -19,9 +21,9 @@ ExecStart=/opt/wand-portal/.venv/bin/python -m wandportal
 
 Restart=always
 RestartSec=5
-# No WatchdogSec until main.py sends sd_notify WATCHDOG=1 pings (spec R3.2).
-# Setting it before then is worse than not having it: systemd sees a process
-# that never checks in, calls it hung, and restarts it on every interval.
+# main.py now pings WATCHDOG=1 at half this interval, so a genuinely hung
+# process is restarted while a healthy one is left alone.
+WatchdogSec=60
 
 NoNewPrivileges=true
 ProtectSystem=strict

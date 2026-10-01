@@ -677,3 +677,68 @@ print(f"framing aid ok (out of frame -> in zone -> outside zone; hint {centre['d
 bad_zone = cfgmod.load("config.yaml")
 bad_zone.framing.x0, bad_zone.framing.x1 = 0.9, 0.2
 assert any("framing zone" in p for p in validate(bad_zone)), validate(bad_zone)
+
+# --- boot and power resilience (plan G10, spec R3.2)
+from wandportal import sdnotify
+
+# Outside systemd everything is a no-op, which is the normal case here.
+for var in ("NOTIFY_SOCKET", "WATCHDOG_USEC"):
+    os.environ.pop(var, None)
+assert sdnotify.ready() is False and sdnotify.stopping() is False
+assert sdnotify.watchdog_interval() is None
+assert sdnotify.start_watchdog(threading.Event()) is None
+
+# With a socket, the real datagrams are sent — including WATCHDOG pings, whose
+# absence is what made the unit restart-loop every 60s before day 1 removed it.
+import socket as _socket
+sock_dir = tempfile.mkdtemp()
+sock_path = os.path.join(sock_dir, "notify")
+srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+srv.bind(sock_path)
+srv.settimeout(3.0)
+os.environ["NOTIFY_SOCKET"] = sock_path
+os.environ["WATCHDOG_USEC"] = "2000000"          # 2s window -> 1s pings
+try:
+    assert sdnotify.ready() is True
+    assert srv.recv(64) == b"READY=1"
+    assert sdnotify.watchdog_interval() == 1.0, sdnotify.watchdog_interval()
+    wstop = threading.Event()
+    thread = sdnotify.start_watchdog(wstop)
+    assert thread is not None
+    assert srv.recv(64) == b"WATCHDOG=1", "the watchdog never pinged"
+    wstop.set(); thread.join(timeout=3)
+    assert not thread.is_alive(), "watchdog thread outlived its stop event"
+finally:
+    srv.close()
+    for var in ("NOTIFY_SOCKET", "WATCHDOG_USEC"):
+        os.environ.pop(var, None)
+print("sd_notify ok (no-op off systemd, READY and WATCHDOG sent on it)")
+
+# Fault injection: kill -9 mid-training must never leave invalid JSON.
+import subprocess as _sub
+fault_dir = tempfile.mkdtemp()
+fault_path = os.path.join(fault_dir, "templates.json")
+writer = _sub.Popen(
+    [sys.executable, "-c",
+     "import sys, time\n"
+     "sys.path.insert(0, %r)\n" % os.getcwd() +
+     "from wandportal import config as c\n"
+     "from wandportal.recognizer import Recognizer\n"
+     "cfg = c.load('config.yaml').recognizer\n"
+     "cfg.templates_path = %r\n" % fault_path +
+     "cfg.template_backups = 2\n"
+     "rec = Recognizer(cfg)\n"
+     "i = 0\n"
+     "while True:\n"
+     "    rec.add_sample('lumos', [(0, 0), (10 + i % 7, 5), (20, 0), (30, 8)])\n"
+     "    i += 1\n"],
+    stdout=_sub.DEVNULL, stderr=_sub.DEVNULL)
+time.sleep(1.2)                       # let it get well into the write loop
+writer.kill()
+writer.wait(timeout=5)
+assert os.path.isfile(fault_path), "no templates file survived the kill"
+survived = json.loads(open(fault_path).read())      # must parse — this is the point
+assert survived["samples"]["lumos"], "templates survived but lost every sample"
+leftovers = [f for f in os.listdir(fault_dir) if f.endswith(".tmp")]
+print(f"power-cut safety ok ({len(survived['samples']['lumos'])} samples intact, "
+      f"valid JSON after kill -9, {len(leftovers)} stray .tmp)")

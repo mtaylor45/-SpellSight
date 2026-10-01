@@ -14,6 +14,14 @@ camera:
   reopen_delay: 2.0          # first wait before retrying a camera that won't open
   reopen_max_delay: 30.0     # backoff ceiling, so a permanently absent camera stays quiet
   reopen_after_failures: 60  # consecutive failed reads before tearing down and reopening
+  # Lock exposure, gain and white balance so the camera stops hunting. Values
+  # are driver units and are TODO until a camera is chosen and measured — see
+  # SPEC.md open question 1.
+  lock_exposure: true
+  exposure_absolute: 50
+  gain: 20
+  auto_white_balance: false
+  v4l2_extra: {}           # raw control=value pairs, applied after the rest
 
 tracker:
   # "fixed" is Phase 1 behaviour. "adaptive" (spec R2.2) lands on day 8; the

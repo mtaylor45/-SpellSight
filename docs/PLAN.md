@@ -135,7 +135,7 @@ Beyond the SPEC phases. Scheduled ones name their day; the rest are backlog.
 **Acceptance.** With a token set, the stream and every `/api/*` route return 401 without it. `off` returns 404 and the console explains rather than showing a broken image. Training and tuning still work from thumbnails alone with the stream off.
 **Depends on.** day 1
 
-### Day 10 — Exposure lock code path `[ ]` **HW** (values only)
+### Day 10 — Exposure lock code path `[~]` — [PR #14](https://github.com/mtaylor45/-SpellSight/pull/14) **HW** (values only)
 **Goal.** Build R2.1's mechanism now; fill in the numbers when the camera exists.
 **Implements.** R2.1 (partial)
 **Changes.** Drive `v4l2-ctl` directly, verify by reading controls back, apply on open **and** on every reopen (a USB re-enumeration silently resets controls). `lock_exposure`, `exposure_absolute`, `gain`, `auto_white_balance`, `v4l2_extra` in config. `v4l-utils` is already in the Dockerfile.

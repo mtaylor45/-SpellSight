@@ -13,6 +13,7 @@ import numpy as np
 
 from .camera import Camera
 from .config import Config
+from .feedback import CAST, REJECTED, SAMPLE, WAND_SEEN, Feedback
 from .mqtt_bridge import MqttBridge
 from .recognizer import Recognizer
 from .spells import Spell, resolve
@@ -41,6 +42,7 @@ class Engine:
         self.tracker = BlobTracker(cfg.tracker)
         self.recognizer = Recognizer(cfg.recognizer)
         self.mqtt = MqttBridge(cfg.mqtt, self.spells)
+        self.feedback = Feedback(cfg.feedback)
 
         self.mode = MODE_RUN
         self.training_spell: str | None = None
@@ -69,6 +71,7 @@ class Engine:
     def start(self) -> None:
         self.camera.start()
         self.mqtt.start()
+        self.feedback.start()
         self._training_thread = threading.Thread(
             target=self._training_loop, name="training", daemon=True
         )
@@ -89,6 +92,7 @@ class Engine:
             self._training_thread.join(timeout=3.0)
         if self._health_thread:
             self._health_thread.join(timeout=3.0)
+        self.feedback.stop()
         self.mqtt.stop()
         self.camera.stop()
 
@@ -96,6 +100,7 @@ class Engine:
 
     def _loop(self) -> None:
         last_seq = -1
+        was_tracking = False
         while not self._stop.is_set():
             seq, frame = self.camera.read()
             if frame is None or seq == last_seq:
@@ -109,6 +114,14 @@ class Engine:
                 log.exception("Tracker error")
                 self.error = str(exc)
                 continue
+
+            # The wand coming into view is its own event (spec R3.1): it tells
+            # someone standing in the room that the device can see them, before
+            # they have finished the gesture.
+            tracking = self.tracker.state is TrackState.TRACKING
+            if tracking and not was_tracking:
+                self.feedback.event(WAND_SEEN)
+            was_tracking = tracking
 
             if gesture is not None:
                 self._handle_gesture(gesture)
@@ -150,6 +163,7 @@ class Engine:
                 "duration": round(duration, 2),
             })
             log.info("Recorded sample %d for %s", count, spell_id)
+            self.feedback.event(SAMPLE, spell_id=spell_id)
 
     def _record(self, entry: dict) -> None:
         self.last_result = entry
@@ -256,6 +270,10 @@ class Engine:
             match.spell_id, match.confidence, match.rejected_reason or "-> cast",
         )
 
+        if match.accepted and spell:
+            self.feedback.event(CAST, colour=getattr(spell, "color", None), spell_id=spell.id)
+        else:
+            self.feedback.event(REJECTED)
         self._record(entry)
 
     # -- rendering ---------------------------------------------------------
@@ -333,6 +351,7 @@ class Engine:
             "camera": self.camera.health(),
             "health": self.health(),       # same snapshot wand/health publishes
             "framing": self.framing(),
+            "feedback": self.feedback.status(),
             "tracker_state": self.tracker.state.value,
             "detecting": self.tracker.detection is not None,
             "mqtt_connected": self.mqtt.connected,

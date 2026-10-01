@@ -742,3 +742,56 @@ assert survived["samples"]["lumos"], "templates survived but lost every sample"
 leftovers = [f for f in os.listdir(fault_dir) if f.endswith(".tmp")]
 print(f"power-cut safety ok ({len(survived['samples']['lumos'])} samples intact, "
       f"valid JSON after kill -9, {len(leftovers)} stray .tmp)")
+
+# --- local feedback scaffolding (spec R3.1, hardware verification deferred)
+from wandportal.feedback import Feedback, NullLeds, NullSound, in_quiet_hours
+from datetime import datetime as _dt
+
+# Quiet hours wrap midnight — the only shape anyone actually configures.
+win = ["22:30", "07:00"]
+assert in_quiet_hours(win, _dt(2026, 1, 1, 23, 0)) is True
+assert in_quiet_hours(win, _dt(2026, 1, 1, 3, 0)) is True
+assert in_quiet_hours(win, _dt(2026, 1, 1, 7, 0)) is False
+assert in_quiet_hours(win, _dt(2026, 1, 1, 12, 0)) is False
+assert in_quiet_hours(["09:00", "17:00"], _dt(2026, 1, 1, 12, 0)) is True
+assert in_quiet_hours([], _dt(2026, 1, 1, 12, 0)) is False
+
+# The default is a true no-op: null backends, no thread, nothing imported.
+fbcfg = cfgmod.load("config.yaml").feedback
+fb = Feedback(fbcfg)
+assert isinstance(fb.leds, NullLeds) and isinstance(fb.sound, NullSound)
+fb.start()
+assert fb._thread is None, "the none backends should not start a thread at all"
+assert "rpi_ws281x" not in sys.modules and "pygame" not in sys.modules
+fb.event("cast", colour="#fff4d6", spell_id="lumos")      # must not raise
+fb.stop()
+
+# Missing hardware is one INFO line, not a crash.
+hwcfg = cfgmod.load("config.yaml").feedback
+hwcfg.leds = "neopixel"
+hwfb = Feedback(hwcfg)
+assert isinstance(hwfb.leds, NullLeds), "a missing rpi_ws281x should fall back to none"
+
+# A backend that raises every call is disabled after the first failure.
+class AlwaysRaises:
+    name = "boom"
+    def show(self, *a, **k): raise RuntimeError("the LED ring is on fire")
+    def close(self): pass
+
+badfb = Feedback(cfgmod.load("config.yaml").feedback)
+badfb.leds = AlwaysRaises()
+badfb._safely("leds", lambda: badfb.leds.show("cast"))
+assert isinstance(badfb.leds, NullLeds), "a failing backend was not disabled"
+assert "leds" in badfb.failures and "on fire" in badfb.failures["leds"], badfb.failures
+badfb._safely("leds", lambda: badfb.leds.show("cast"))     # now a no-op, still silent
+assert badfb.status()["leds"] == "none"
+
+# Unknown backend names are refused by validation rather than silently ignored.
+badcfg = cfgmod.load("config.yaml"); badcfg.feedback.leds = "disco"
+assert any("feedback.leds" in p for p in validate(badcfg)), validate(badcfg)
+
+# Spells carry a colour for the ring.
+assert BY_ID["lumos"].color == "#fff4d6" and BY_ID["nox"].color == "#1b2a6b"
+assert BY_ID["alohomora"].color == "#ffb648", "untouched spells keep the default amber"
+print("feedback scaffolding ok (none is a true no-op, missing hardware degrades, "
+      "failing backend disabled once)")

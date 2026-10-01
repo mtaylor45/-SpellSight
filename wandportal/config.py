@@ -63,6 +63,23 @@ class TrackerConfig:
 
 
 @dataclass
+class FeedbackConfig:
+    """All backends optional, with a working no-op default.
+
+    Docker and dev machines must be unaffected, so `none` has to be a real
+    choice rather than a degraded one.
+    """
+
+    leds: str = "none"            # none | neopixel
+    led_pin: int = 18
+    led_count: int = 16
+    led_brightness: float = 0.4
+    sound: str = "none"           # none | aplay
+    sound_dir: str = "/data/sounds"
+    quiet_hours: list = field(default_factory=lambda: ["22:30", "07:00"])
+
+
+@dataclass
 class FramingConfig:
     """The casting zone, as fractions of the frame.
 
@@ -128,6 +145,7 @@ class Config:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     framing: FramingConfig = field(default_factory=FramingConfig)
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     spells: list[str] = field(default_factory=lambda: [
         "lumos", "nox", "alohomora", "colloportus",
         "incendio", "accio", "silencio", "revelio",
@@ -330,6 +348,17 @@ def validate(cfg: Config) -> list[str]:
             f"server.auth_token is only {len(cfg.server.auth_token)} characters; "
             "use at least 8, or leave it empty to disable auth"
         )
+    fb = cfg.feedback
+    if fb.leds not in ("none", "neopixel"):
+        problems.append(f"feedback.leds {fb.leds!r} must be 'none' or 'neopixel'")
+    if fb.sound not in ("none", "aplay"):
+        problems.append(f"feedback.sound {fb.sound!r} must be 'none' or 'aplay'")
+    if not 0.0 <= fb.led_brightness <= 1.0:
+        problems.append(f"feedback.led_brightness {fb.led_brightness} must be in 0.0..1.0")
+    if len(fb.quiet_hours) not in (0, 2):
+        problems.append("feedback.quiet_hours must be empty or a [start, end] pair like"
+                        ' ["22:30", "07:00"]')
+
     f = cfg.framing
     if not (0.0 <= f.x0 < f.x1 <= 1.0 and 0.0 <= f.y0 < f.y1 <= 1.0):
         problems.append(
@@ -366,7 +395,7 @@ def load(path: str | None = None) -> Config:
             else:
                 setattr(cfg, key, value)
 
-    for name in ("camera", "tracker", "recognizer", "mqtt", "server", "framing"):
+    for name in ("camera", "tracker", "recognizer", "mqtt", "server", "framing", "feedback"):
         _apply_env(name, getattr(cfg, name))
 
     if os.environ.get("WAND_SPELLS"):

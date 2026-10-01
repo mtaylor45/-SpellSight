@@ -77,6 +77,17 @@ mqtt:
 # The casting zone, as fractions of the frame. A concealed camera cannot be
 # aimed by eye — the console draws this box and tells you whether the wand is
 # inside it. Aim before the panel goes on, and mark the position.
+# Local feedback. Every backend is optional and "none" is a real choice, not a
+# degraded one — Docker and dev machines are unaffected.
+feedback:
+  leds: none             # none | neopixel
+  led_pin: 18
+  led_count: 16
+  led_brightness: 0.4
+  sound: none            # none | aplay
+  sound_dir: /data/sounds
+  quiet_hours: ["22:30", "07:00"]   # LEDs dim, sound muted
+
 framing:
   show_zone: true
   x0: 0.15

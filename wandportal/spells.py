@@ -16,6 +16,8 @@ class Spell:
     name: str
     effect: str
     suggested: str = ""
+    # Shown on the feedback ring when the spell lands (spec R3.1).
+    color: str = "#ffb648"
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -23,13 +25,13 @@ class Spell:
 
 # Ordered roughly by how useful they are as home-automation triggers.
 CATALOG: list[Spell] = [
-    Spell("lumos", "Lumos", "Creates light at the wand tip", "Turn lights on"),
-    Spell("nox", "Nox", "Extinguishes wand light", "Turn lights off"),
-    Spell("lumos_maxima", "Lumos Maxima", "Blinding burst of light", "All lights to 100%"),
+    Spell("lumos", "Lumos", "Creates light at the wand tip", "Turn lights on", "#fff4d6"),
+    Spell("nox", "Nox", "Extinguishes wand light", "Turn lights off", "#1b2a6b"),
+    Spell("lumos_maxima", "Lumos Maxima", "Blinding burst of light", "All lights to 100%", "#ffffff"),
     Spell("alohomora", "Alohomora", "Unlocks doors", "Unlock smart lock"),
     Spell("colloportus", "Colloportus", "Seals a door shut", "Lock smart lock"),
-    Spell("incendio", "Incendio", "Conjures fire", "Fireplace / warm scene"),
-    Spell("aguamenti", "Aguamenti", "Jet of water", "Irrigation or humidifier"),
+    Spell("incendio", "Incendio", "Conjures fire", "Fireplace / warm scene", "#ff6a1f"),
+    Spell("aguamenti", "Aguamenti", "Jet of water", "Irrigation or humidifier", "#2e9be8"),
     Spell("accio", "Accio", "Summons an object", "Robot vacuum: come home"),
     Spell("wingardium_leviosa", "Wingardium Leviosa", "Levitates an object", "Raise blinds / desk"),
     Spell("descendo", "Descendo", "Moves an object downward", "Lower blinds / projector screen"),
@@ -37,11 +39,11 @@ CATALOG: list[Spell] = [
     Spell("sonorus", "Sonorus", "Amplifies the voice", "Volume up"),
     Spell("quietus", "Quietus", "Counters Sonorus", "Volume down"),
     Spell("expelliarmus", "Expelliarmus", "Disarms an opponent", "Kill switch for a scene"),
-    Spell("stupefy", "Stupefy", "Stuns a target", "Pause all media"),
+    Spell("stupefy", "Stupefy", "Stuns a target", "Pause all media", "#e03b8b"),
     Spell("rennervate", "Rennervate", "Revives a stunned target", "Resume media"),
-    Spell("protego", "Protego", "Shield charm", "Arm alarm system"),
+    Spell("protego", "Protego", "Shield charm", "Arm alarm system", "#6fd3c7"),
     Spell("finite_incantatem", "Finite Incantatem", "Ends ongoing spell effects", "Disarm alarm / reset scene"),
-    Spell("expecto_patronum", "Expecto Patronum", "Conjures a Patronus", "Night light + calm scene"),
+    Spell("expecto_patronum", "Expecto Patronum", "Conjures a Patronus", "Night light + calm scene", "#cfe8ff"),
     Spell("reparo", "Reparo", "Repairs broken objects", "Restart a service or device"),
     Spell("scourgify", "Scourgify", "Cleans a surface", "Start robot vacuum"),
     Spell("tergeo", "Tergeo", "Siphons mess away", "Vacuum spot clean"),
@@ -53,8 +55,8 @@ CATALOG: list[Spell] = [
     Spell("immobulus", "Immobulus", "Freezes targets in place", "Freeze all automations"),
     Spell("reducto", "Reducto", "Blasts objects apart", "Panic / all off"),
     Spell("riddikulus", "Riddikulus", "Defeats a Boggart", "Play a joke sound"),
-    Spell("morsmordre", "Morsmordre", "Conjures the Dark Mark", "Halloween scene"),
-    Spell("confringo", "Confringo", "Explosive blasting curse", "Strobe effect"),
+    Spell("morsmordre", "Morsmordre", "Conjures the Dark Mark", "Halloween scene", "#4b2d6b"),
+    Spell("confringo", "Confringo", "Explosive blasting curse", "Strobe effect", "#ff3b1f"),
     Spell("diffindo", "Diffindo", "Severing charm", "Cut power to a switch"),
     Spell("engorgio", "Engorgio", "Enlarges an object", "Brightness up"),
     Spell("reducio", "Reducio", "Shrinks an object", "Brightness down"),
@@ -63,11 +65,11 @@ CATALOG: list[Spell] = [
     Spell("geminio", "Geminio", "Duplicates an object", "Mirror a scene to another room"),
     Spell("muffliato", "Muffliato", "Fills ears with buzzing", "White noise on"),
     Spell("episkey", "Episkey", "Heals minor injuries", "Reset devices to default state"),
-    Spell("serpensortia", "Serpensortia", "Conjures a snake", "Green scene"),
+    Spell("serpensortia", "Serpensortia", "Conjures a snake", "Green scene", "#4caf50"),
     Spell("tarantallegra", "Tarantallegra", "Forces the target to dance", "Party scene + music"),
     Spell("petrificus_totalus", "Petrificus Totalus", "Full body-bind", "Do not disturb mode"),
     Spell("obliviate", "Obliviate", "Erases memories", "Clear notifications / reset history"),
-    Spell("avada_kedavra", "Avada Kedavra", "The Killing Curse", "Master off — everything"),
+    Spell("avada_kedavra", "Avada Kedavra", "The Killing Curse", "Master off — everything", "#39ff5a"),
 ]
 
 BY_ID: dict[str, Spell] = {s.id: s for s in CATALOG}

@@ -39,6 +39,8 @@ class TrackerConfig:
     ambient_percentile: float = 99.0   # of the scene, not counting the wand
     ambient_interval: int = 15         # frames between recalculations
     ambient_width: int = 160           # downscale before the percentile
+    threshold_floor: int = 200         # adaptive never goes below this
+    threshold_margin: int = 25         # required brightness above ambient
     blur: int = 3                # gaussian kernel, odd, 0 disables
     min_area: float = 2.0        # px^2
     max_area: float = 500.0
@@ -231,16 +233,14 @@ def validate(cfg: Config) -> list[str]:
         problems.append("spells: is empty — nothing would ever be recognized or discovered")
 
     t = cfg.tracker
-    if t.threshold_mode == "adaptive":
-        problems.append(
-            "tracker.threshold_mode: 'adaptive' is not implemented yet (spec R2.2, "
-            "plan day 8). Use 'fixed'. The ambient estimate it needs is already "
-            "published, so you can watch headroom before switching."
-        )
-    elif t.threshold_mode != "fixed":
+    if t.threshold_mode not in ("fixed", "adaptive"):
         problems.append(
             f"tracker.threshold_mode {t.threshold_mode!r} must be 'fixed' or 'adaptive'"
         )
+    if not 1 <= t.threshold_floor <= 254:
+        problems.append(f"tracker.threshold_floor {t.threshold_floor} is outside 1..254")
+    if t.threshold_margin < 0:
+        problems.append(f"tracker.threshold_margin {t.threshold_margin} must be at least 0")
     if not 1 <= t.ambient_percentile <= 100:
         problems.append(f"tracker.ambient_percentile {t.ambient_percentile} must be in 1..100")
     if t.ambient_interval < 1:

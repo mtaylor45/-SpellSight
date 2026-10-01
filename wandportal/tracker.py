@@ -118,11 +118,22 @@ class BlobTracker:
         """The cutoff actually in force this frame.
 
         In "fixed" mode this is the configured threshold, unchanged — that is
-        the whole point, and the tests assert against it. Day 8 (spec R2.2)
-        gives "adaptive" a different answer here, and nothing else in the
-        pipeline has to know.
+        the whole point, and the tests assert against it.
+
+        In "adaptive" mode it is clamp(ambient + margin, floor, 254): the wand
+        has to beat the room by a fixed margin, so the cutoff rises with the
+        afternoon sun and falls again at night. The floor stops a dark room
+        dropping the cutoff into sensor noise, and 254 stops a blown-out room
+        producing a cutoff nothing can ever cross.
+
+        Nothing else in the pipeline knows which mode produced the number.
         """
-        return int(self.cfg.threshold)
+        if self.cfg.threshold_mode != "adaptive" or self.ambient.value is None:
+            # No ambient measurement yet means the first frames after start;
+            # the configured threshold is the honest fallback.
+            return int(self.cfg.threshold)
+        return int(max(self.cfg.threshold_floor,
+                       min(254, round(self.ambient.value + self.cfg.threshold_margin))))
 
     @property
     def headroom(self) -> float | None:

@@ -339,10 +339,7 @@ assert abs(tr2.headroom - (tcfg.threshold - tr2.ambient.value)) < 0.11, tr2.head
 print(f"threshold seam ok (mode={tcfg.threshold_mode}, cutoff={tr2.working_threshold}, "
       f"headroom={tr2.headroom})")
 
-# adaptive is refused until day 8 rather than silently behaving as fixed.
 acfg = cfgmod.load("config.yaml")
-acfg.tracker.threshold_mode = "adaptive"
-assert any("not implemented yet" in p for p in validate(acfg)), validate(acfg)
 acfg.tracker.threshold_mode = "sideways"
 assert any("must be 'fixed' or 'adaptive'" in p for p in validate(acfg)), validate(acfg)
 
@@ -516,3 +513,47 @@ print(f"threshold sweep ok (band {band['lo']}-{band['hi']}, suggest {band['sugge
 # A frame where nothing isolates a single blob must say so, not invent a band.
 flat = np.full((480, 640), 25, np.uint8)
 assert clean_band(sweep_thresholds(flat, min_area=2.0, max_area=500.0))["lo"] is None
+
+# --- adaptive thresholding (spec R2.2, plan day 8)
+# The cutoff follows the room: clamp(ambient + margin, floor, 254). Constants
+# are SPEC.md's starting values and stay guesses until measured in the room.
+adcfg = cfgmod.load("config.yaml").tracker
+adcfg.threshold_mode = "adaptive"
+adcfg.ambient_interval = 3
+assert validate(cfgmod.load("config.yaml")) == []        # fixed still validates
+adaptive_ok = cfgmod.load("config.yaml"); adaptive_ok.tracker.threshold_mode = "adaptive"
+assert validate(adaptive_ok) == [], validate(adaptive_ok)
+
+atr = BlobTracker(adcfg)
+# Before any measurement it falls back to the configured threshold, honestly.
+assert atr.working_threshold == adcfg.threshold, atr.working_threshold
+
+dim = np.full((480, 640), 40, np.uint8)
+atr.detect(dim)
+assert atr.working_threshold == adcfg.threshold_floor, (
+    f"a dark room should sit on the floor, got {atr.working_threshold}")
+
+# A simulated ambient step from 40 to 180 must be tracked within 3 intervals.
+bright = np.full((480, 640), 180, np.uint8)
+tracked_after = None
+for frame_no in range(1, adcfg.ambient_interval * 3 + 1):
+    atr.detect(bright)
+    if atr.working_threshold >= 180 + adcfg.threshold_margin - 1 and tracked_after is None:
+        tracked_after = frame_no
+assert tracked_after is not None, f"never tracked the step (cutoff {atr.working_threshold})"
+assert tracked_after <= adcfg.ambient_interval * 3, tracked_after
+assert atr.working_threshold == 205, atr.working_threshold     # 180 + 25
+print(f"adaptive tracking ok (40->180 tracked after {tracked_after} frames, "
+      f"{tracked_after / adcfg.ambient_interval:.0f} intervals; cutoff {atr.working_threshold})")
+
+# Clamped at both ends: a blown-out room cannot produce an uncrossable cutoff.
+blown = np.full((480, 640), 250, np.uint8)
+for _ in range(adcfg.ambient_interval * 2):
+    atr.detect(blown)
+assert atr.working_threshold == 254, atr.working_threshold
+# And fixed mode is still exactly the configured number, whatever the room does.
+fixtr = BlobTracker(cfgmod.load("config.yaml").tracker)
+for _ in range(20):
+    fixtr.detect(bright)
+assert fixtr.working_threshold == fixtr.cfg.threshold, "fixed mode drifted"
+print(f"adaptive clamps ok (floor {adcfg.threshold_floor}, ceiling 254; fixed unmoved)")
